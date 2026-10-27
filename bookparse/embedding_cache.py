@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,39 @@ def cache_key(model_name: str, text: str, params: dict | None = None) -> str:
         sort_keys=True, ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _save_atomic(path: Path, vec: np.ndarray) -> None:
+    """Write .npy via a temp file + os.replace so readers never see a
+    partially written cache entry."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with open(tmp, "wb") as fh:
+        np.save(fh, vec)
+    os.replace(tmp, path)
+
+
+def _encode_checked(
+    encode_fn: Callable[[list[str]], np.ndarray], batch: list[str],
+) -> np.ndarray:
+    """Run encode_fn and validate its output before it is cached."""
+    arr = np.asarray(encode_fn(batch))
+    if arr.ndim != 2 or not np.issubdtype(arr.dtype, np.number):
+        raise ValueError(
+            f"encode_fn must return a 2D numeric array "
+            f"(n_texts, dim); got shape={arr.shape}, dtype={arr.dtype}"
+        )
+    if arr.shape[0] != len(batch):
+        raise ValueError(
+            f"encode_fn returned {arr.shape[0]} vectors for "
+            f"{len(batch)} texts"
+        )
+    if arr.shape[1] == 0:
+        raise ValueError("encode_fn returned vectors with zero dimension")
+    if not np.isfinite(arr).all():
+        raise ValueError(
+            "encode_fn returned non-finite values (NaN or inf)"
+        )
+    return arr.astype(np.float32)
 
 
 def embed_with_cache(
@@ -47,22 +81,25 @@ def embed_with_cache(
     keys = [cache_key(model_name, t, params) for t in texts]
     vectors: dict[str, np.ndarray] = {}
     missing: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for key, text in zip(keys, texts):
-        if key in vectors:
+        if key in seen:
             continue
+        seen.add(key)
         f = cache_dir / f"{key}.npy"
         if f.is_file():
-            vectors[key] = np.load(f)
-        else:
-            vectors[key] = np.empty(0)  # placeholder to dedupe `missing`
-            missing.append((key, text))
+            try:
+                vectors[key] = np.load(f)
+                continue
+            except (OSError, ValueError):
+                pass  # corrupted/unreadable cache entry → recompute
+        missing.append((key, text))
 
     t0 = time.perf_counter()
     if missing:
-        new = encode_fn([t for _, t in missing])
+        new = _encode_checked(encode_fn, [t for _, t in missing])
         for (key, _), vec in zip(missing, new):
-            vec = np.asarray(vec, dtype=np.float32)
-            np.save(cache_dir / f"{key}.npy", vec)
+            _save_atomic(cache_dir / f"{key}.npy", vec)
             vectors[key] = vec
     elapsed = time.perf_counter() - t0
     return np.stack([vectors[k] for k in keys]), len(missing), elapsed

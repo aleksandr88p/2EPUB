@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from bookparse.embedding_cache import cache_key, embed_with_cache
 
@@ -89,3 +90,53 @@ def test_duplicate_texts_encoded_once(tmp_path: Path) -> None:
     assert n == 2
     assert vectors.shape == (3, 8)
     np.testing.assert_array_equal(vectors[0], vectors[1])
+
+
+def test_corrupted_cache_file_is_recomputed(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    enc = make_encoder(calls)
+    v1, n1, _ = embed_with_cache(enc, ["alpha"], tmp_path, MODEL, {})
+    assert n1 == 1
+
+    # Corrupt the cached .npy — next run must recompute, not crash.
+    (tmp_path / f"{cache_key(MODEL, 'alpha', {})}.npy").write_bytes(
+        b"not a valid npy file"
+    )
+    v2, n2, _ = embed_with_cache(enc, ["alpha"], tmp_path, MODEL, {})
+    assert n2 == 1
+    np.testing.assert_array_equal(v1, v2)
+
+    # And the repaired entry serves subsequent runs.
+    _, n3, _ = embed_with_cache(enc, ["alpha"], tmp_path, MODEL, {})
+    assert n3 == 0
+
+
+def test_encoder_wrong_row_count_raises(tmp_path: Path) -> None:
+    def bad_encode(batch: list[str]) -> np.ndarray:
+        return np.zeros((len(batch) - 1, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="returned .* vectors for .* texts"):
+        embed_with_cache(bad_encode, ["a", "b", "c"], tmp_path, MODEL, {})
+
+
+def test_encoder_nan_raises(tmp_path: Path) -> None:
+    def nan_encode(batch: list[str]) -> np.ndarray:
+        out = np.ones((len(batch), 8), dtype=np.float32)
+        out[0, 0] = np.nan
+        return out
+
+    with pytest.raises(ValueError, match="non-finite"):
+        embed_with_cache(nan_encode, ["a"], tmp_path, MODEL, {})
+    # Nothing was cached — retry with a healthy encoder works.
+    _, n, _ = embed_with_cache(
+        make_encoder([]), ["a"], tmp_path, MODEL, {},
+    )
+    assert n == 1
+
+
+def test_encoder_bad_shape_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="2D numeric array"):
+        embed_with_cache(
+            lambda b: np.array([1.0, 2.0, 3.0]),  # 1D instead of 2D
+            ["a"], tmp_path, MODEL, {},
+        )
