@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .chapter_alignment import align_chapters, format_report
 from .checks import ERROR, build_report
 from .epub_parser import parse_epub
 from .fb2_parser import parse_fb2
@@ -40,6 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.add_argument(
         "-o", "--output", type=Path, default=None,
         help="optional path to save the text report",
+    )
+    align_cmd = sub.add_parser(
+        "align-chapters",
+        help="align chapters of English and Russian books (JSON result)",
+    )
+    align_cmd.add_argument("english", type=Path, help="path to English .epub/.fb2")
+    align_cmd.add_argument("russian", type=Path, help="path to Russian .epub/.fb2")
+    align_cmd.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="output JSON path (default: cache/align_<en>--<ru>.json)",
     )
     return parser
 
@@ -95,12 +106,31 @@ def run_check(args: argparse.Namespace) -> int:
     return 2 if any(i.level == ERROR for i in issues) else 0
 
 
+def run_align(args: argparse.Namespace) -> int:
+    en = _parse_any(args.english)
+    ru = _parse_any(args.russian)
+    result = align_chapters(en, ru)
+
+    out = args.output or (
+        Path("cache") / f"align_{args.english.stem}--{args.russian.stem}.json"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    print(format_report(result))
+    print(f"\nSaved to: {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "parse":
         run_parse(args)
     elif args.command == "check":
         return run_check(args)
+    elif args.command == "align-chapters":
+        return run_align(args)
     return 0
 
 
