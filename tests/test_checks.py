@@ -69,6 +69,18 @@ def test_mid_sentence_splits_error() -> None:
     assert splits and splits[0].level == ERROR
 
 
+def test_mid_sentence_check_respects_chapter_boundaries() -> None:
+    # Last paragraph of ch-1 ends without punctuation and the first
+    # paragraph of ch-2 starts lowercase — but they are in different
+    # chapters, so this is NOT a split.
+    book = _book([
+        _chapter("One", ["This chapter ends abruptly without punctuation and"], order=0),
+        _chapter("Two", ["continues here. Plus some more text."], order=1),
+    ])
+    issues = check_book(book, "english")
+    assert "mid-sentence-splits" not in _codes(issues)
+
+
 def test_few_mid_sentence_splits_is_warning() -> None:
     texts = ["A normal sentence."] * 20 + ["a suspicious ending without punct and",
                                           "continues here."]
@@ -148,6 +160,42 @@ def test_offset_alignment_finds_extra_front_chapter() -> None:
     codes = _codes(issues)
     assert "unpaired-chapters" in codes
     assert not any(i.code == "volume-mismatch" for i in issues)
+
+
+def test_mid_book_insertion_detected() -> None:
+    # Same chapter sequence, but EN has an extra chapter in the middle.
+    # Chapter sizes alternate so a shifted pairing is visibly wrong.
+    sizes = [500, 3000, 500, 3000, 500, 3000]
+    ru = _book([
+        _chapter(f"Гл{i}", ["w " * s], order=i)
+        for i, s in enumerate(sizes)
+    ])
+    en_sizes = sizes[:2] + [500] + sizes[2:]  # insertion at index 2
+    en = _book([
+        _chapter(f"Ch{i}", ["w " * s], order=i)
+        for i, s in enumerate(en_sizes)
+    ])
+    issues = compare_books(en, ru)
+    local = [i for i in issues if i.code == "local-shift-suspected"]
+    assert local and local[0].level == WARNING
+    # The confident "everything paired fine" message must not appear.
+    assert "volume-ok" not in _codes(issues)
+
+
+def test_consistent_shift_is_not_flagged_as_local() -> None:
+    # Extra chapter only at the end: global pairing stays consistent,
+    # no mid-book shift should be suspected.
+    sizes = [500, 3000, 500, 3000, 500, 3000]
+    ru = _book([
+        _chapter(f"Гл{i}", ["w " * s], order=i)
+        for i, s in enumerate(sizes)
+    ])
+    en = _book([
+        _chapter(f"Ch{i}", ["w " * s], order=i)
+        for i, s in enumerate(sizes + [500])  # extra last chapter
+    ])
+    issues = compare_books(en, ru)
+    assert "local-shift-suspected" not in _codes(issues)
 
 
 def test_no_titled_chapters_is_error() -> None:

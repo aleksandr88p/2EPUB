@@ -13,7 +13,8 @@ Between the English and Russian books:
     body are treated as "plot" chapters; notes/auxiliary bodies and
     untitled front matter are handled separately)
   * positional pairing of chapters by volume, with a small offset
-    search to tolerate unpaired front/back matter
+    search to tolerate unpaired front/back matter and a regional
+    check for mid-book chapter insertions/skips
 
 Levels: INFO — notable but harmless; WARNING — review recommended;
 ERROR — the source is probably unusable for alignment as-is.
@@ -105,13 +106,18 @@ def check_book(book: Book, side: str) -> list[Issue]:
                 "probably a part divider.",
             ))
 
-    splits = [
-        (prev, nxt)
-        for prev, nxt in zip(paras, paras[1:])
-        if prev.text.strip() and nxt.text.strip()
-        and not _TERMINAL_RE.search(prev.text.strip())
-        and nxt.text.strip()[0].islower()
-    ]
+    # Compare neighbours only within one chapter: a paragraph ending
+    # without terminal punctuation at a chapter boundary is normal.
+    splits = []
+    for ch in book.chapters:
+        ch_paras = [p for p in ch.paragraphs if p.type not in SERVICE_TYPES]
+        for prev, nxt in zip(ch_paras, ch_paras[1:]):
+            if (
+                prev.text.strip() and nxt.text.strip()
+                and not _TERMINAL_RE.search(prev.text.strip())
+                and nxt.text.strip()[0].islower()
+            ):
+                splits.append((prev, nxt))
     if splits:
         ratio = len(splits) / max(len(paras), 1)
         issues.append(Issue(
@@ -218,6 +224,52 @@ def _best_offset(
     return best, pairs
 
 
+def _regional_shifts(
+    en_ch: list[Chapter],
+    ru_ch: list[Chapter],
+    global_shift: int,
+    segments: int = 3,
+) -> tuple[list[int], list[int]]:
+    """Best pairing offset per book segment.
+
+    A single global offset cannot express a chapter inserted or dropped
+    in the middle of a book: the pairing before it needs shift N, after
+    it shift N+1. Comparing per-segment best offsets detects this.
+    Returns (shifts, boundaries) — boundaries are RU chapter indices
+    where the preferred offset changes.
+    """
+    n = len(ru_ch)
+    bounds = [round(i * n / segments) for i in range(segments + 1)]
+
+    def best_in_range(lo: int, hi: int) -> int:
+        def key(shift: int) -> tuple[int, int, int]:
+            flagged = pairs = 0
+            for ri in range(lo, hi):
+                ei = ri + shift
+                if 0 <= ei < len(en_ch):
+                    pairs += 1
+                    we, wr, ratio = _pair_volumes(en_ch[ei], ru_ch[ri])
+                    flagged += _volume_flag(we, wr, ratio)
+            unpaired = (hi - lo) - pairs
+            # Prefer the global shift on ties so ambiguous regions
+            # (uniform chapter sizes) do not produce false positives.
+            return (unpaired * 10 + flagged, abs(shift - global_shift), abs(shift))
+
+        return min(range(-_MAX_OFFSET, _MAX_OFFSET + 1), key=key)
+
+    shifts = [
+        best_in_range(lo, hi)
+        for lo, hi in zip(bounds, bounds[1:])
+        if hi > lo
+    ]
+    boundaries = [
+        bounds[i]
+        for i in range(1, len(shifts))
+        if shifts[i] != shifts[i - 1]
+    ]
+    return shifts, boundaries
+
+
 def compare_books(en: Book, ru: Book) -> list[Issue]:
     """Cross-book structural comparison (EN vs RU)."""
     issues: list[Issue] = []
@@ -262,6 +314,24 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
     unpaired_en = [en_ch[i] for i in range(len(en_ch)) if i not in paired_en]
     unpaired_ru = [ru_ch[i] for i in range(len(ru_ch)) if i not in paired_ru]
 
+    regional, boundaries = _regional_shifts(en_ch, ru_ch, offset)
+    local_shift_suspected = len(set(regional)) > 1
+
+    if local_shift_suspected:
+        issues.append(Issue(
+            WARNING, "both", "local-shift-suspected",
+            f"Best chapter-pairing offset differs between book regions "
+            f"({regional} for successive segments vs global {offset:+d}) "
+            "— a chapter may be inserted or dropped mid-book, so "
+            "positional pairing after that point is unreliable. "
+            "Heuristic check; verify manually.",
+            [
+                f"offset change near RU chapter {ru_ch[b].id} "
+                f"{ru_ch[b].title!r} (index {b})"
+                for b in boundaries
+            ],
+        ))
+
     if offset or unpaired_en or unpaired_ru:
         details = [
             f"{side} unpaired: " + ", ".join(
@@ -300,7 +370,7 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
                 for i, a, b, we, wr, ratio in flagged[:8]
             ],
         ))
-    else:
+    elif not local_shift_suspected:
         issues.append(Issue(
             INFO, "both", "volume-ok",
             f"All {len(pairs)} paired chapters have comparable volume "
