@@ -181,6 +181,55 @@ def test_group_scorer_called_only_within_bandwidth() -> None:
         assert abs(ei[-1] - rj[-1]) <= 2
 
 
+def test_strong_1to1_pairs_are_not_grouped() -> None:
+    # Correct 1:1 matches exist for every sentence. Even a generous
+    # group score must not fuse them — the merged alternative covers
+    # the same sentences at higher scaled cost.
+    en = ["a", "b", "c", "d"]
+    ru = ["a2", "b2", "c2", "d2"]
+    sim = _sim(4, 4)
+    np.fill_diagonal(sim, 0.85)
+
+    ops = align_sentences(
+        en, ru, sim,
+        group_scorer=lambda ei, rj: 0.90,  # overly optimistic scorer
+        bandwidth=15,
+    )
+    assert [o.kind for o in ops] == ["1:1"] * 4
+    assert _ops_index_pairs(ops) == [
+        ((i,), (i,)) for i in range(4)
+    ]
+
+
+def test_scaled_group_cost_allows_real_merges() -> None:
+    # Real 1:2: no good single match for en[1], but joined sim is high.
+    en = ["a", "big one", "c"]
+    ru = ["a2", "part one", "part two", "c2"]
+    sim = _sim(3, 4)
+    sim[0][0] = sim[2][3] = 0.9
+    sim[1][1] = sim[1][2] = 0.35
+
+    ops = align_sentences(
+        en, ru, sim,
+        group_scorer=lambda ei, rj: 0.8 if rj == (1, 2) else 0.0,
+    )
+    assert [o.kind for o in ops] == ["1:1", "1:2", "1:1"]
+
+
+def test_parameter_validation() -> None:
+    en, ru = ["a"], ["b"]
+    sim = np.zeros((1, 1))
+    with pytest.raises(ValueError, match="skip_cost"):
+        align_sentences(en, ru, sim, skip_cost=0)
+    with pytest.raises(ValueError, match="group_penalty"):
+        align_sentences(en, ru, sim, group_penalty=-0.1)
+    with pytest.raises(ValueError, match="bandwidth"):
+        align_sentences(en, ru, sim, bandwidth=-1)
+    with pytest.raises(ValueError, match="non-finite"):
+        bad = np.array([[float("nan")]])
+        align_sentences(en, ru, bad)
+
+
 def test_summarize_ops() -> None:
     en = ["a", "noise", "b"]
     ru = ["a2", "b2"]

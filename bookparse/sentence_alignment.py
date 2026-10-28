@@ -11,8 +11,16 @@ model (through the embedding cache); in tests it can be a stub.
 
 Costs (minimized):
     1:1 pair        1 - sim[i][j]
-    1:2 / 2:1       1 - group_sim + group_penalty
+    1:2 / 2:1       2 * (1 - group_sim) + group_penalty
     skip            skip_cost (per unmatched sentence)
+
+The group cost is scaled by the number of covered sentences
+(max(len_en, len_r) = 2 for the supported groups). A per-operation
+"1 - sim" would undercharge groups: they cover more sentences per
+constant and tend to absorb stray sentences whose true match exists
+elsewhere. With the scaled cost a group wins over "1:1 + skip" only
+when its joined similarity is genuinely higher than the single-sentence
+match minus a margin — real merges still win, spurious ones do not.
 
 `bandwidth` restricts group transitions to cells near the diagonal —
 the only place where merged translations are plausible — which also
@@ -76,6 +84,14 @@ def align_sentences(
             f"sim_matrix shape {sim.shape} does not match "
             f"({n}, {m}) sentences"
         )
+    if sim.size and not np.isfinite(sim).all():
+        raise ValueError("sim_matrix contains non-finite values")
+    if skip_cost <= 0:
+        raise ValueError("skip_cost must be positive")
+    if group_penalty < 0:
+        raise ValueError("group_penalty must be >= 0")
+    if not isinstance(bandwidth, int) or bandwidth < 0:
+        raise ValueError("bandwidth must be a non-negative integer")
 
     INF = float("inf")
     d = np.full((n + 1, m + 1), INF)
@@ -96,16 +112,18 @@ def align_sentences(
                 (d[i - 1][j - 1] + (1.0 - sim[i - 1][j - 1]), ("1:1",))
             ]
             if group_scorer is not None and abs(i - j) <= bandwidth:
+                # Group cost scales with the number of covered
+                # sentences: max(len_en, len_r) = 2.
                 if j >= 2:
                     g = group_scorer((i - 1,), (j - 2, j - 1))
                     cand.append((
-                        d[i - 1][j - 2] + (1.0 - g) + group_penalty,
+                        d[i - 1][j - 2] + 2.0 * (1.0 - g) + group_penalty,
                         ("1:2", g),
                     ))
                 if i >= 2:
                     g = group_scorer((i - 2, i - 1), (j - 1,))
                     cand.append((
-                        d[i - 2][j - 1] + (1.0 - g) + group_penalty,
+                        d[i - 2][j - 1] + 2.0 * (1.0 - g) + group_penalty,
                         ("2:1", g),
                     ))
             cand.append((d[i - 1][j] + skip_cost, ("skip_en",)))
