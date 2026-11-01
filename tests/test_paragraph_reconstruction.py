@@ -175,6 +175,13 @@ def test_skip_ru_with_no_match_at_all() -> None:
     assert paras[0].ru_sentences == ["R0"]
 
 
+def test_no_en_paragraphs_with_ru_text_raises() -> None:
+    # A chapter whose EN side has no paragraphs cannot hold RU
+    # sentences — fail loudly instead of crashing with IndexError.
+    with pytest.raises(ValueError, match="no paragraphs"):
+        rebuild_chapter([], ["R0"], [_op("skip_ru", (), (0,))])
+
+
 def test_incomplete_coverage_raises() -> None:
     with pytest.raises(ValueError, match="cover"):
         rebuild_chapter(

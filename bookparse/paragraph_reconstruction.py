@@ -61,6 +61,12 @@ def rebuild_chapter(
     elif len(para_types) != len(en_paragraphs):
         raise ValueError("para_types length must match en_paragraphs")
 
+    if not en_paragraphs and ru_sentences:
+        raise ValueError(
+            "EN chapter has no paragraphs to hold "
+            f"{len(ru_sentences)} RU sentence(s)"
+        )
+
     sent_para = [
         pi for pi, para in enumerate(en_paragraphs) for _ in para
     ]
