@@ -287,7 +287,18 @@ def _verify(
     exp_names = [f"chap_{k + 1}.xhtml" for k in range(len(expected))]
     checks.append((
         "exactly the selected chapters present",
-        sorted(n for n in docs if n.startswith("chap_")) == exp_names,
+        {n for n in docs if n.startswith("chap_")} == set(exp_names),
+    ))
+    # Reading order comes from the spine, not from file-name order
+    # (lexicographic sort misorders chap_10+ vs chap_2).
+    name_by_id = {i.get_id(): i.get_name() for i in book.get_items()}
+    spine_chaps = [
+        name for idref, _lin in book.spine
+        if (name := name_by_id.get(idref)) and name.startswith("chap_")
+    ]
+    checks.append((
+        "chapters in original order (spine)",
+        spine_chaps == exp_names,
     ))
 
     # On re-read ebooklib maps the nav document to an EpubNav item;

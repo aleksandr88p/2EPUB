@@ -182,43 +182,70 @@ def test_render_heading_and_quote_types() -> None:
 
 # --- post-write verification --------------------------------------------
 
-def _mini_epub(path, body_html: str) -> None:
+def _mini_epub(path, bodies: list[str], spine_order=None) -> None:
     book = epub.EpubBook()
     book.set_language("en")
     book.set_identifier("test")
     book.set_title("test")
-    c = epub.EpubHtml(uid="chap_1", file_name="chap_1.xhtml", title="T")
-    c.content = f"<body>{body_html}</body>"
-    book.add_item(c)
+    items = []
+    for k, body in enumerate(bodies):
+        c = epub.EpubHtml(
+            uid=f"chap_{k + 1}", file_name=f"chap_{k + 1}.xhtml",
+            title=f"T{k + 1}",
+        )
+        c.content = f"<body>{body}</body>"
+        book.add_item(c)
+        items.append(c)
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    book.toc = (c,)
-    book.spine = ["nav", c]
+    book.toc = tuple(items)
+    order = spine_order if spine_order is not None else range(len(items))
+    book.spine = ["nav", *[items[i] for i in order]]
     epub.write_epub(str(path), book)
 
 
-def test_verify_passes_on_complete_text(tmp_path) -> None:
-    bps = [
-        BilingualParagraph(
-            index=0, type="paragraph",
-            en_sentences=["E0", "E1"], ru_sentences=["R0"],
-        )
+def _expected(n: int) -> list[tuple[str, list[BilingualParagraph]]]:
+    return [
+        (f"T{k + 1}", [
+            BilingualParagraph(
+                index=0, type="paragraph",
+                en_sentences=[f"E{k}"], ru_sentences=[f"R{k}"],
+            )
+        ])
+        for k in range(n)
     ]
+
+
+def _bodies(n: int) -> list[str]:
+    return [
+        f'<p class="en"><strong>E{k}</strong></p><p class="ru">R{k}</p>'
+        for k in range(n)
+    ]
+
+
+def test_verify_passes_on_complete_text(tmp_path) -> None:
     path = tmp_path / "good.epub"
-    _mini_epub(
-        path,
-        '<p class="en"><strong>E0 E1</strong></p><p class="ru">R0</p>',
-    )
-    assert all(ok for _, ok in _verify(path, [("T", bps)]))
+    _mini_epub(path, _bodies(1))
+    assert all(ok for _, ok in _verify(path, _expected(1)))
 
 
 def test_verify_detects_missing_ru(tmp_path) -> None:
-    bps = [
-        BilingualParagraph(
-            index=0, type="paragraph",
-            en_sentences=["E0", "E1"], ru_sentences=["R0"],
-        )
-    ]
     path = tmp_path / "bad.epub"
-    _mini_epub(path, '<p class="en"><strong>E0 E1</strong></p>')
-    assert not all(ok for _, ok in _verify(path, [("T", bps)]))
+    _mini_epub(path, ['<p class="en"><strong>E0</strong></p>'])
+    assert not all(ok for _, ok in _verify(path, _expected(1)))
+
+
+def test_verify_many_chapters_not_broken_by_name_sort(tmp_path) -> None:
+    # Regression: lexicographic name sort misorders chap_10+ vs
+    # chap_2 — presence must compare sets, order must use the spine.
+    path = tmp_path / "many.epub"
+    _mini_epub(path, _bodies(12))
+    assert all(ok for _, ok in _verify(path, _expected(12)))
+
+
+def test_verify_detects_wrong_spine_order(tmp_path) -> None:
+    path = tmp_path / "reordered.epub"
+    _mini_epub(path, _bodies(3), spine_order=[2, 1, 0])
+    results = dict(_verify(path, _expected(3)))
+    assert results["exactly the selected chapters present"] is True
+    assert results["chapters in original order (spine)"] is False
