@@ -1,295 +1,281 @@
+
 # 2EPUB
+
+**2EPUB** is a Python application for creating bilingual ebooks with parallel English and Russian text.
+
+The application takes two books — an English original and its Russian translation — aligns their content, and generates a single EPUB file.
+
+In the resulting book:
+
+- **English paragraphs are displayed in bold.**
+- The corresponding Russian translation appears directly below each English paragraph.
+- The chapter order and structure follow the English original.
+- The resulting EPUB can be opened in a standard EPUB reader.
+
+**Status:** MVP v0.1 — working experimental version.
 
 [English](README.md) | [Русский](README.ru.md)
 
-**Local Python CLI that merges an English original book and its Russian literary translation into a single bilingual EPUB with parallel text.**
+## Installation and Usage
 
-Each English paragraph is rendered **in bold**, with the Russian translation directly beneath it in normal font — designed for comfortable reading in English while keeping the translation always at hand.
+Instructions for macOS. Git and Python are required (the project was developed using Python 3.14).
 
-> Status: **MVP v0.1** — a working, experimental command-line converter.
-> Long-term this is meant to become one feature of a larger application
-> for reading and language learning (see [Roadmap](#roadmap)).
+### 1. Clone the repository
 
----
-
-## Table of contents
-
-- [Current status](#current-status)
-- [Quick start (macOS)](#quick-start-macos)
-- [Working with books](#working-with-books)
-- [Commands](#commands)
-- [Project structure](#project-structure)
-- [How it works](#how-it-works)
-- [Known limitations](#known-limitations-mvp-v01)
-- [First test results](#first-test-results)
-- [Roadmap](#roadmap)
-- [Technical documentation](#technical-documentation)
-
-## Current status
-
-Implemented and verified end to end on a real book:
-
-- FB2 source parsing (chapters, typed paragraphs, sentences).
-- Chapter-level alignment via dynamic programming.
-- Sentence segmentation for English and Russian.
-- Multilingual embeddings with **Qwen3-Embedding-0.6B** (Apple Silicon MPS).
-- Disk cache for embeddings — reruns skip model inference.
-- Sentence-level DP alignment with ops `1:1`, `1:2`, `2:1`, `skip_en`, `skip_ru`.
-- Reconstruction of bilingual paragraphs (EN paragraph structure is authoritative).
-- EPUB generation with cover, navigation and per-block styling.
-- EN chapters without an RU counterpart are kept (EN-only).
-- Automatic post-write checks: structure, reading order, text completeness.
-- Two modes: **preview** (first 2 chapter pairs) and **full book** (`--all`).
-
-## Quick start (macOS)
-
-Requires Python — developed and verified on **Python 3.14** (Apple Silicon); other recent versions are untested.
+Open Terminal and run:
 
 ```bash
-git clone git@github.com:aleksandr88p/2EPUB.git
+git clone https://github.com/aleksandr88p/2EPUB.git
 cd 2EPUB
 ```
 
+### 2. Create a virtual environment
+
 ```bash
 python3 -m venv venv
+```
+
+Activate it:
+
+```bash
 source venv/bin/activate
-pip install -r requirements.txt
 ```
 
-The Qwen3-Embedding-0.6B model (~1 GB) is **downloaded automatically**
-from Hugging Face into `cache/models/` on first run — no separate setup
-step, but the first generation needs an internet connection.
-
-Sanity check (optional but recommended, ~1 s, no model needed):
+### 3. Install dependencies
 
 ```bash
-venv/bin/python -m pytest
+python -m pip install -r requirements.txt
 ```
 
-Preflight check of a book pair (optional, reports structural issues):
+On the first conversion, the application automatically downloads the Qwen embedding model. An internet connection is required for this initial download.
 
-```bash
-venv/bin/python -m bookparse check "books/<english>.fb2" "books/<russian>.fb2"
-```
+### 4. Add your books
 
-Generate the preview (first two aligned chapter pairs):
+Place the English original and Russian translation in `.fb2` format inside the `books/` directory.
 
-```bash
-venv/bin/python experiments/build_preview_epub.py
-```
+For example:
 
-Generate the full book:
-
-```bash
-venv/bin/python experiments/build_preview_epub.py --all
-```
-
-Output lands in `output/`:
-
-| Mode    | Command adds | Output file                 |
-|---------|--------------|-----------------------------|
-| preview | —            | `output/2epub_preview.epub` |
-| full    | `--all`      | `output/2epub_full.epub`    |
-
-> The first run is slow: the model computes embeddings for every
-> sentence of the book. Results are cached in `cache/embeddings/`, so
-> rerunning the same book pair is much faster.
-
-## Working with books
-
-- Supported input format for the builder: **FB2** (both EPUB and FB2 are
-  supported by the `bookparse` CLI for parsing/checking only).
-- The `books/` directory is the conventional place for inputs
-  (gitignored — books are not committed), but any path works.
-- Pass the English original and the Russian translation explicitly:
-
-  ```bash
-  venv/bin/python experiments/build_preview_epub.py \
-      --en books/english.fb2 --ru books/russian.fb2 \
-      --output output/my_book.epub --all
-  ```
-
-- `--en` is the original — it defines the structure, chapter and
-  paragraph order; `--ru` is the translation. The script does **not**
-  detect languages, it trusts the flags.
-- `--output` is optional; without it the result goes to the default
-  path from the table above. Parent directories are created
-  automatically.
-- With no flags at all the bundled test books are used
-  (`books/blade itslef.fb2` + `books/1 Krov i zhelezo.fb2`).
-- Supported flags: `--en`, `--ru`, `--output`, `--all`, `-h/--help`.
-
-## Commands
-
-```bash
-# preview EPUB (first 2 aligned chapter pairs)
-venv/bin/python experiments/build_preview_epub.py
-
-# full-book EPUB (all pairs + EN-only chapters)
-venv/bin/python experiments/build_preview_epub.py --all
-
-# custom book pair and output file
-venv/bin/python experiments/build_preview_epub.py \
-    --en books/english.fb2 --ru books/russian.fb2 \
-    --output output/my_book.epub --all
-
-# builder help
-venv/bin/python experiments/build_preview_epub.py --help
-
-# full test suite
-venv/bin/python -m pytest
-
-# inspect a single book's structure -> cache/<name>.json
-venv/bin/python -m bookparse parse "books/book.fb2"
-
-# preflight structural report on a book pair
-venv/bin/python -m bookparse check "books/en.fb2" "books/ru.fb2"
-
-# chapter alignment result -> cache/align_<en>--<ru>.json
-venv/bin/python -m bookparse align-chapters "books/en.fb2" "books/ru.fb2"
-```
-
-## Project structure
-
-```
+```text
 2EPUB/
-├── bookparse/                  # the library: parsing → alignment → checks
-│   ├── models.py               # Book / Chapter / Paragraph / Sentence
-│   ├── fb2_parser.py           # FB2 structure extraction (BeautifulSoup)
-│   ├── epub_parser.py          # EPUB structure extraction (EbookLib)
-│   ├── segment.py              # sentence splitting, word counting
-│   ├── chapter_alignment.py    # DP chapter alignment + quality report
-│   ├── sentence_alignment.py   # DP sentence alignment (AlignOp list)
-│   ├── paragraph_reconstruction.py  # EN paragraphs + attached RU text
-│   ├── embedding_cache.py      # per-sentence .npy embedding cache
-│   ├── checks.py               # preflight structural checks
-│   └── cli.py                  # `python -m bookparse ...`
-├── experiments/                # runnable scripts / diagnostics
-│   ├── build_preview_epub.py   # ★ the EPUB generator (preview + --all)
-│   ├── paragraph_preview.py    # bilingual paragraph preview -> txt
-│   ├── sentence_alignment_diagnostic.py
-│   ├── sentence_match_diagnostic.py
-│   └── test_embeddings.py
-├── tests/                      # pytest suite
-├── books/                      # input FB2 files        (gitignored)
-├── cache/
-│   ├── models/                 # HF model weights       (gitignored)
-│   ├── embeddings/             # .npy vectors per text  (gitignored)
-│   └── *.json                  # parsed books, alignment results
-├── output/                     # generated EPUBs        (gitignored)
-├── docs/ARCHITECTURE.md        # technical documentation
+├── books/
+│   ├── The Blade Itself.fb2
+│   └── Кровь и железо.fb2
+├── experiments/
+├── output/
+└── ...
+```
+
+Create the `books/` directory manually if it does not exist.
+
+You can use any filenames. There is no need to rename your books to `english.fb2` or `russian.fb2`.
+
+### 5. Run the converter
+
+From the project directory, with the virtual environment activated, run:
+
+```bash
+python experiments/build_preview_epub.py \
+  --en "books/The Blade Itself.fb2" \
+  --ru "books/Кровь и железо.fb2" \
+  --output "output/My Book.epub" \
+  --all
+```
+
+Replace the example filenames with your own.
+
+**Command-line options:**
+
+| Option | Description |
+|---|---|
+| `--en` | Path to the English original |
+| `--ru` | Path to the Russian translation |
+| `--output` | Path and filename of the generated EPUB |
+| `--all` | Process the entire book instead of only the first two aligned chapters |
+
+Use quotation marks around paths containing spaces or non-Latin characters.
+
+### 6. Open the generated book
+
+After successful conversion, the EPUB file will be saved at the specified location:
+
+```text
+output/My Book.epub
+```
+
+You can open it in an EPUB reader or transfer it to your e-reader.
+
+### Additional commands
+
+Generate a preview using only the first two aligned chapters:
+
+```bash
+python experiments/build_preview_epub.py \
+  --en "books/The Blade Itself.fb2" \
+  --ru "books/Кровь и железо.fb2" \
+  --output "output/preview.epub"
+```
+
+Display all available options:
+
+```bash
+python experiments/build_preview_epub.py --help
+```
+
+Run automated tests:
+
+```bash
+python -m pytest
+```
+
+Running the converter without arguments uses the default test books from the `books/` directory, if those files are available.
+
+## How 2EPUB Works
+
+The application processes books through several stages.
+
+### 1. Book parsing
+
+The FB2 parser extracts chapters, paragraphs, and sentences from both books.
+
+The English original defines the structure of the resulting bilingual book.
+
+### 2. Chapter alignment
+
+The application identifies corresponding chapters in the English and Russian books.
+
+This is necessary because translations may differ from the original in their chapter structure.
+
+### 3. Embedding generation
+
+The application generates multilingual sentence embeddings using the local **Qwen3-Embedding-0.6B** model.
+
+These embeddings help estimate semantic similarity between English and Russian sentences.
+
+Generated embeddings are cached on disk, allowing alignment experiments without repeatedly running the model.
+
+### 4. Sentence alignment
+
+A dynamic programming algorithm finds an ordered alignment between the original and translated sentences.
+
+Supported alignment operations include:
+
+- `1:1` — one sentence aligned with one sentence.
+- `1:2` — one sentence aligned with two sentences.
+- `2:1` — two sentences aligned with one sentence.
+- `skip_en` and `skip_ru` — unmatched sentences on either side.
+
+### 5. Paragraph reconstruction
+
+After sentence alignment, the application reconstructs bilingual paragraphs using the English book's paragraph structure as the reference.
+
+### 6. EPUB generation
+
+The application uses EbookLib to generate the final EPUB containing English paragraphs and their Russian translations.
+
+## Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| Python | Main programming language |
+| EbookLib | EPUB generation |
+| BeautifulSoup | Ebook structure parsing |
+| Qwen3-Embedding-0.6B | Multilingual sentence embeddings |
+| NumPy | Numerical processing |
+| Dynamic programming | Text alignment |
+| pytest | Automated testing |
+
+The embedding model runs locally. After the initial download, no cloud API is required to run the model.
+
+## Current Project Status
+
+### Implemented features
+
+- FB2 parsing and text extraction.
+- English–Russian chapter alignment.
+- Embedding generation and caching.
+- Sentence and sentence-group alignment.
+- Bilingual paragraph reconstruction.
+- EPUB generation.
+- Structural and text-preservation checks.
+- Command-line interface with configurable input and output paths.
+- Automated tests.
+
+### Initial testing
+
+The first experimental book was **The Blade Itself / «Кровь и железо»**.
+
+A complete bilingual EPUB was successfully generated.
+
+Structural and text-preservation checks were performed. A partial independent semantic review also identified several paragraph-boundary alignment errors.
+
+These results demonstrate that the processing pipeline works, but they do not guarantee perfect alignment.
+
+### Known limitations
+
+- The converter currently accepts FB2 input only.
+- Alignment errors may occur between neighboring paragraphs, particularly short dialogue lines.
+- Some original formatting may not be preserved perfectly, including italics and poetry line breaks.
+- Translations can differ significantly from the original in structure.
+- Automated validation does not guarantee that every paragraph is semantically aligned correctly.
+- Alignment quality across other books and translations has not yet been thoroughly evaluated.
+
+**Important:** This MVP is intended for experimentation and personal use. Generated books should be reviewed for alignment quality.
+
+## Project Structure
+
+```text
+2EPUB/
+├── bookparse/       # Book parsing and processing
+├── experiments/     # Experiments and EPUB generation scripts
+├── tests/           # Automated tests
+├── docs/            # Technical documentation
+├── books/           # Input books
+├── cache/           # Model files and embedding cache
+├── output/          # Generated EPUB files
 ├── requirements.txt
-└── pytest.ini
+├── README.md
+└── README.ru.md
 ```
 
-- `books/` — *your* input files. Nothing is required to be committed here.
-- `bookparse/` — the reusable library: everything except the final EPUB
-  assembly. Pure data structures in, data structures out.
-- `experiments/` — executable scripts that wire the library together,
-  including the actual EPUB builder.
-- `cache/` — everything expensive: model weights and per-sentence
-  embedding vectors, so reruns don't redo inference.
-- `output/` — final artifacts (EPUB) and diagnostic reports.
-- `tests/` — unit tests for parsing, alignment, reconstruction, cache
-  and the EPUB builder.
+The `books/`, `cache/`, and `output/` directories are excluded from Git. Input books, downloaded models, and generated EPUB files are not committed to the repository.
 
-## How it works
-
-```
-EN.fb2 ──┐                          ┌── embeddings (Qwen, cached)
-         ├─► parse ─► chapters ─► sentences ─► DP sentence alignment
-RU.fb2 ──┘        └─► DP chapter alignment ─┘          │
-                                                       ▼
-EPUB ◄─ ebooklib ◄─ bilingual paragraphs ◄─ paragraph reconstruction
-```
-
-1. **Parse.** Both FB2 files become `Book` objects: chapters → typed
-   paragraphs → sentences.
-2. **Chapter alignment.** A DP pass (Needleman–Wunsch style) pairs
-   titled main-body chapters using text volume, position in the book
-   and nesting level. Unpaired/service chapters are kept aside, never
-   silently dropped.
-3. **Sentence alignment.** For each chapter pair, sentence embeddings
-   (Qwen3-Embedding-0.6B, unit-norm) give a similarity matrix; a second
-   DP pass produces monotonic ops: `1:1` pairs, `1:2`/`2:1` merges
-   (scored on the *joined* text of the group) and explicit
-   `skip_en`/`skip_ru`. Embeddings are cached on disk.
-4. **Paragraph reconstruction.** RU sentences are distributed over the
-   EN paragraph skeleton. The EN book defines structure and order —
-   nothing is lost or duplicated (verified by contract).
-5. **EPUB assembly.** EN paragraph in **bold**, RU translation below in
-   normal font; headings, epigraphs and the EN cover are preserved;
-   unpaired EN chapters ship as EN-only sections.
-6. **Verification.** The written EPUB is re-opened and checked: exact
-   chapter set, spine order, well-formed XHTML, complete/ordered
-   EN + RU text per chapter, resolvable image references.
-
-Why embeddings + DP: embedding similarity alone gives pairwise scores,
-but choosing the best *global* monotonic mapping (with merges and
-skips) is exactly what dynamic programming solves cheaply and
-deterministically.
-
-## Known limitations (MVP v0.1)
-
-Working but experimental — a correct result is not guaranteed:
-
-- Alignment is not perfect: a Russian sentence can land under the
-  *neighboring* English paragraph. Short replies, standalone lines,
-  letters and epigraphs are the hardest cases.
-- `skip_en` / `skip_ru` ops need careful interpretation; a small number
-  of EN paragraphs legitimately end up without translation.
-- EN chapters without an RU counterpart are included **without**
-  translation (front matter, `Acknowledgments`).
-- RU chapters without an EN counterpart (notes, front matter) are **not**
-  included in the EPUB — they are listed in the build report.
-- FB2 formatting is only partially preserved: italics (`<emphasis>`)
-  are flattened to plain text, and RU verse lines merge into a single
-  paragraph following the EN paragraph structure.
-- Text completeness is verified **against the parser output**, not the
-  raw FB2 — a loss during parsing itself would not be caught.
-- The first book passed a *partial* semantic review; a full independent
-  audit is still pending.
-- The builder accepts **FB2 input only** (the `bookparse` CLI also reads
-  EPUB, but EPUB images/cover would not be carried over).
-
-## First test results
-
-First full test book: **The Blade Itself / «Кровь и железо»**
-(Joe Abercrombie).
-
-| Metric                                  | Result |
-|-----------------------------------------|--------|
-| XHTML sections in EPUB                  | 52     |
-| English text blocks                     | 5 056  |
-| Russian text blocks                     | 5 033  |
-| EN blocks without Russian text          | 23     |
-| Confirmed problems in partial review    | 5 MAJOR + 1 MINOR |
-
-These numbers describe this specific book/translation pair only — they
-do not characterize the algorithm's accuracy in general.
+For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Roadmap
 
 ### Converter improvements
 
-- Higher alignment quality; fix paragraph-boundary shifts.
-- Better formatting preservation (italics, verse lines).
-- EPUB input support (currently FB2 only; EPUB images/cover would be
-  lost).
-- Richer QA reports per book.
-- Testing across different books and translations.
+- Improve alignment accuracy and fix paragraph-boundary shifts.
+- Preserve more of the original formatting.
+- Add full EPUB input support.
+- Expand alignment quality reports.
+- Evaluate the algorithm on additional books and translations.
 
-### The bigger application (plans, not features)
+### Future Smart Reader
 
-- Own web reader UI.
-- Backend for uploading and storing books.
-- Reading English with parallel translation; show/hide translation.
-- LLM integration for translation.
-- Text simplification to the reader's level (e.g. B2 → B1).
-- Long term: a commercial service.
+2EPUB is intended to become the foundation of a larger language-learning application.
 
-## Technical documentation
+Potential features include:
 
-Internals — modules, data structures, pipeline I/O, cache design, the
-DP cost model and integrity guarantees — are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- Reading books directly in a web browser.
+- Switching between original text, translation, and parallel reading modes.
+- Translating individual words, sentences, and paragraphs.
+- Adapting English text difficulty using an LLM, for example from B2 to B1.
+- Saving vocabulary and maintaining a personal word list.
+- Uploading and processing personal ebooks.
+
+**Next development stage:** designing the backend and building a minimal web reader.
+
+## Development Principles
+
+The project is developed in Python with the assistance of the Windsurf AI IDE.
+
+Core principles:
+
+- The English original determines the structure of the generated book.
+- Preserve all original and translated text without unnecessary loss or duplication.
+- Keep parsing, alignment, and EPUB generation separate.
+- Cache embeddings to make experiments faster.
+- Validate results using automated tests and independent quality reviews.
+
+The current release is an experimental MVP, not a finished commercial product.
