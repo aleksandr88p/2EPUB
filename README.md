@@ -97,26 +97,27 @@ Output lands in `output/`:
 
 ## Working with books
 
-- Input books live in `books/` (gitignored — books are not committed).
 - Supported input format for the builder: **FB2** (both EPUB and FB2 are
-  supported by the `bookparse` CLI for parsing/checking).
-- **Important:** the builder script does *not* detect languages and does
-  *not* accept book paths via CLI. The English and Russian files are
-  hardcoded as constants at the top of `experiments/build_preview_epub.py`:
+  supported by the `bookparse` CLI for parsing/checking only).
+- The `books/` directory is the conventional place for inputs
+  (gitignored — books are not committed), but any path works.
+- Pass the English original and the Russian translation explicitly:
 
-  ```python
-  EN_PATH = PROJECT_ROOT / "books" / "blade itslef.fb2"
-  RU_PATH = PROJECT_ROOT / "books" / "1 Krov i zhelezo.fb2"
+  ```bash
+  venv/bin/python experiments/build_preview_epub.py \
+      --en books/english.fb2 --ru books/russian.fb2 \
+      --output output/my_book.epub --all
   ```
 
-  To convert a different book pair, put both `.fb2` files into `books/`
-  and edit `EN_PATH` / `RU_PATH`. Whichever file `EN_PATH` points to is
-  treated as English and defines the structure; `RU_PATH` is the
-  translation.
-
-- Output file names are likewise constants (`PREVIEW_PATH`,
-  `FULL_PATH`). There is **no `--output` flag** yet.
-- Supported CLI flags today: `--all` and `-h/--help`. Nothing else.
+- `--en` is the original — it defines the structure, chapter and
+  paragraph order; `--ru` is the translation. The script does **not**
+  detect languages, it trusts the flags.
+- `--output` is optional; without it the result goes to the default
+  path from the table above. Parent directories are created
+  automatically.
+- With no flags at all the bundled test books are used
+  (`books/blade itslef.fb2` + `books/1 Krov i zhelezo.fb2`).
+- Supported flags: `--en`, `--ru`, `--output`, `--all`, `-h/--help`.
 
 ## Commands
 
@@ -126,6 +127,11 @@ venv/bin/python experiments/build_preview_epub.py
 
 # full-book EPUB (all pairs + EN-only chapters)
 venv/bin/python experiments/build_preview_epub.py --all
+
+# custom book pair and output file
+venv/bin/python experiments/build_preview_epub.py \
+    --en books/english.fb2 --ru books/russian.fb2 \
+    --output output/my_book.epub --all
 
 # builder help
 venv/bin/python experiments/build_preview_epub.py --help
@@ -243,9 +249,8 @@ Working but experimental — a correct result is not guaranteed:
   raw FB2 — a loss during parsing itself would not be caught.
 - The first book passed a *partial* semantic review; a full independent
   audit is still pending.
-- Book paths and output names are hardcoded in
-  `experiments/build_preview_epub.py` (see
-  [Working with books](#working-with-books)).
+- The builder accepts **FB2 input only** (the `bookparse` CLI also reads
+  EPUB, but EPUB images/cover would not be carried over).
 
 ## First test results
 
@@ -269,8 +274,8 @@ do not characterize the algorithm's accuracy in general.
 
 - Higher alignment quality; fix paragraph-boundary shifts.
 - Better formatting preservation (italics, verse lines).
-- Arbitrary input files and output names via CLI (`--en`, `--ru`,
-  `--output`).
+- EPUB input support (currently FB2 only; EPUB images/cover would be
+  lost).
 - Richer QA reports per book.
 - Testing across different books and translations.
 

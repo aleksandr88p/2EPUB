@@ -1,4 +1,5 @@
-"""Build a bilingual EPUB from the test books.
+"""Build a bilingual EPUB from an English FB2 book and its Russian
+translation (defaults: the bundled test books).
 
 Two modes:
 
@@ -24,6 +25,9 @@ EN counterpart are not added to the EPUB (the EN book defines its
 structure); they are listed in the run report instead.
 
 Run:  venv/bin/python experiments/build_preview_epub.py [--all]
+      venv/bin/python experiments/build_preview_epub.py \
+          --en books/english.fb2 --ru books/russian.fb2 \
+          --output output/my_book.epub --all
 """
 
 from __future__ import annotations
@@ -67,10 +71,18 @@ ENCODE_PARAMS: dict = {"prompt": None, "normalize_embeddings": True}
 N_CHAPTERS = 2
 
 
+def _rel(path: Path) -> Path | str:
+    try:
+        return path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return path
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="build_preview_epub",
-        description="Build a bilingual EPUB from the test books.",
+        description="Build a bilingual EPUB from an English FB2 book "
+                    "and its Russian translation.",
     )
     parser.add_argument(
         "--all", action="store_true", dest="all_chapters",
@@ -78,11 +90,36 @@ def _build_parser() -> argparse.ArgumentParser:
              "without an RU counterpart (default: first %d pairs only)"
              % N_CHAPTERS,
     )
+    parser.add_argument(
+        "--en", type=Path, default=EN_PATH, metavar="PATH",
+        help="path to the English .fb2 book (default: %s)" % _rel(EN_PATH),
+    )
+    parser.add_argument(
+        "--ru", type=Path, default=RU_PATH, metavar="PATH",
+        help="path to the Russian .fb2 book (default: %s)" % _rel(RU_PATH),
+    )
+    parser.add_argument(
+        "--output", type=Path, default=None, metavar="PATH",
+        help="output EPUB path (default: %s, or %s with --all)"
+             % (_rel(PREVIEW_PATH), _rel(FULL_PATH)),
+    )
     return parser
 
 
 def _output_path(all_chapters: bool) -> Path:
     return FULL_PATH if all_chapters else PREVIEW_PATH
+
+
+def _validate_book_path(path: Path, label: str) -> Path:
+    """Return `path` if it is an existing .fb2 file, else abort with a
+    readable error instead of a parser traceback."""
+    if not path.is_file():
+        raise SystemExit(f"error: {label} book not found: {path}")
+    if path.suffix.lower() != ".fb2":
+        raise SystemExit(
+            f"error: {label} book must be a .fb2 file: {path}"
+        )
+    return path
 
 _CSS = """\
 p.en { font-weight: bold; margin: 0.4em 0 0 0; }
@@ -352,10 +389,12 @@ def _verify(
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    out_path = _output_path(args.all_chapters)
+    en_path = _validate_book_path(args.en, "English")
+    ru_path = _validate_book_path(args.ru, "Russian")
+    out_path = args.output or _output_path(args.all_chapters)
 
-    en_book = parse_fb2(EN_PATH)
-    ru_book = parse_fb2(RU_PATH)
+    en_book = parse_fb2(en_path)
+    ru_book = parse_fb2(ru_path)
     alignment = align_chapters(en_book, ru_book)
     all_pairs = alignment["pairs"]
     pairs = all_pairs if args.all_chapters else all_pairs[:N_CHAPTERS]
@@ -403,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         aligned.append((en_ch, ru_ch, bps))
 
     # --- collect EN images actually referenced ------------------------
-    en_soup = _fb2_soup(EN_PATH)
+    en_soup = _fb2_soup(en_path)
     binaries = _fb2_binaries(en_soup)
     img_files: dict[str, str] = {}
     for en_ch, _, bps in aligned:

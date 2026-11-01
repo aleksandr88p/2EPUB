@@ -195,7 +195,7 @@ spine `[cover?, nav, chap_1 … chap_N]`.
   would lose its images/cover silently.
 - The group scorer covers only *adjacent* pairs — groups larger than
   2:1/1:2 are impossible.
-- Book paths and output names are constants in
-  `experiments/build_preview_epub.py`; there is no `--en/--ru/--output`.
+- The builder's CLI covers `--en/--ru/--output/--all`; model and
+  alignment parameters remain fixed constants in the script.
 - Verification compares EPUB text to *parser output*, not to the raw
   FB2 — parser-level losses are invisible to it.

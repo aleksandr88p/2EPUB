@@ -7,19 +7,25 @@ the post-write verification. No ML, no real book files.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from ebooklib import epub
 
 from bookparse.models import Book, Chapter, Paragraph, Sentence
 from bookparse.paragraph_reconstruction import BilingualParagraph
 from experiments.build_preview_epub import (
+    EN_PATH,
     FULL_PATH,
     PREVIEW_PATH,
+    RU_PATH,
     _build_parser,
     _chapter_plan,
     _en_only_paragraphs,
     _output_path,
     _render_paragraph,
     _unpaired_reason,
+    _validate_book_path,
     _verify,
 )
 
@@ -77,6 +83,44 @@ def test_output_paths() -> None:
     assert _output_path(True) == FULL_PATH
     assert PREVIEW_PATH.name == "2epub_preview.epub"
     assert FULL_PATH.name == "2epub_full.epub"
+
+
+def test_book_paths_default_to_bundled_books() -> None:
+    args = _build_parser().parse_args([])
+    assert args.en == EN_PATH
+    assert args.ru == RU_PATH
+    assert args.output is None
+
+
+def test_custom_paths_parsed() -> None:
+    args = _build_parser().parse_args([
+        "--en", "books/english.fb2",
+        "--ru", "books/russian.fb2",
+        "--output", "output/my_book.epub",
+        "--all",
+    ])
+    assert args.en == Path("books/english.fb2")
+    assert args.ru == Path("books/russian.fb2")
+    assert args.output == Path("output/my_book.epub")
+    assert args.all_chapters is True
+
+
+def test_validate_book_path_accepts_existing_fb2(tmp_path) -> None:
+    f = tmp_path / "book.fb2"
+    f.write_text("<FictionBook/>")
+    assert _validate_book_path(f, "English") == f
+
+
+def test_validate_book_path_rejects_missing(tmp_path) -> None:
+    with pytest.raises(SystemExit, match="not found"):
+        _validate_book_path(tmp_path / "missing.fb2", "English")
+
+
+def test_validate_book_path_rejects_non_fb2(tmp_path) -> None:
+    f = tmp_path / "book.epub"
+    f.write_text("x")
+    with pytest.raises(SystemExit, match=r"\.fb2"):
+        _validate_book_path(f, "Russian")
 
 
 # --- chapter plan -------------------------------------------------------
