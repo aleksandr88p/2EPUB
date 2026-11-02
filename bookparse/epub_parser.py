@@ -9,8 +9,10 @@ file becomes a chapter.
 
 from __future__ import annotations
 
+import posixpath
 from pathlib import Path
 from typing import Iterable, Iterator
+from urllib.parse import unquote, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from ebooklib import epub
@@ -95,6 +97,23 @@ def _block_source_id(el: Tag) -> str | None:
         return el.get("id")
     anchor = el.find("a", id=True)
     return anchor.get("id") if anchor else None
+
+
+def _image_source_path(src: str | None, document_name: str) -> str | None:
+    """Resolve a local image href to its path inside the EPUB archive."""
+    if not src:
+        return None
+    parsed = urlsplit(src)
+    if parsed.scheme or parsed.netloc:
+        return src
+    path = unquote(parsed.path)
+    if not path:
+        return src
+    if path.startswith("/"):
+        return posixpath.normpath(path.lstrip("/"))
+    return posixpath.normpath(
+        posixpath.join(posixpath.dirname(document_name), path)
+    )
 
 
 def _norm(text: str) -> str:
@@ -237,7 +256,11 @@ def parse_epub(path: str | Path, lang: str | None = None) -> Book:
             name = block.name.lower()
             text = _block_text(block)
             images = [
-                {"src": img.get("src"), "alt": img.get("alt"), "id": img.get("id")}
+                {
+                    "src": _image_source_path(img.get("src"), file_name),
+                    "alt": img.get("alt"),
+                    "id": img.get("id"),
+                }
                 for img in block.find_all("img")
             ]
             if name in HEADING_TAGS or (start is not None and _norm(text) == _norm(title or "")):

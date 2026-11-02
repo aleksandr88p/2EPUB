@@ -7,23 +7,27 @@ the post-write verification. No ML, no real book files.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
 from ebooklib import epub
 
+from bookparse.chapter_alignment import align_chapters
 from bookparse.models import Book, Chapter, Paragraph, Sentence
 from bookparse.paragraph_reconstruction import BilingualParagraph
 from experiments.build_preview_epub import (
-    EN_PATH,
     FULL_PATH,
     PREVIEW_PATH,
-    RU_PATH,
+    _image_file_names,
     _build_parser,
     _chapter_plan,
     _en_only_paragraphs,
+    _image_key,
     _output_path,
+    _parse_book,
     _render_paragraph,
+    _source_assets,
     _unpaired_reason,
     _validate_book_path,
     _verify,
@@ -68,14 +72,72 @@ def _book(chapters: list[Chapter]) -> Book:
     )
 
 
+def _write_minimal_fb2(path: Path) -> None:
+    cover = base64.b64encode(b"fb2-cover").decode("ascii")
+    inline = base64.b64encode(b"fb2-inline").decode("ascii")
+    path.write_text(
+        f"""<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"
+             xmlns:l="http://www.w3.org/1999/xlink">
+  <description><title-info>
+    <book-title>Sample</book-title><lang>en</lang>
+    <coverpage><image l:href="#cover"/></coverpage>
+  </title-info></description>
+  <body><section>
+    <title><p>Sample</p></title>
+    <p>A sentence for alignment.</p>
+    <image l:href="#inline"/>
+  </section></body>
+  <binary id="cover" content-type="image/jpeg">{cover}</binary>
+  <binary id="inline" content-type="image/png">{inline}</binary>
+</FictionBook>""",
+        encoding="utf-8",
+    )
+
+
+def _write_minimal_epub(path: Path) -> None:
+    book = epub.EpubBook()
+    book.set_identifier("sample")
+    book.set_title("Sample")
+    book.set_language("en")
+    book.set_cover("cover.jpg", b"epub-cover")
+    image = epub.EpubImage(
+        uid="inline", file_name="images/inline.png",
+        media_type="image/png", content=b"epub-inline",
+    )
+    chapter = epub.EpubHtml(
+        uid="chapter", file_name="text/chapter.xhtml",
+        title="Sample", lang="en",
+    )
+    chapter.content = (
+        '<html><body><h1 id="chapter">Sample</h1>'
+        "<p>A sentence for alignment.</p>"
+        '<p><img src="../images/inline.png" alt="inline"/></p>'
+        "</body></html>"
+    )
+    book.add_item(image)
+    book.add_item(chapter)
+    book.toc = (epub.Link(
+        "text/chapter.xhtml#chapter", "Sample", "chapter",
+    ),)
+    book.spine = [chapter]
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    epub.write_epub(str(path), book)
+
+
 # --- CLI / output path --------------------------------------------------
 
 def test_all_flag_defaults_off() -> None:
-    assert _build_parser().parse_args([]).all_chapters is False
+    assert _build_parser().parse_args([
+        "--en", "en.fb2", "--ru", "ru.fb2",
+    ]).all_chapters is False
 
 
 def test_all_flag_on() -> None:
-    assert _build_parser().parse_args(["--all"]).all_chapters is True
+    assert _build_parser().parse_args([
+        "--all", "--en", "en.fb2", "--ru", "ru.fb2",
+    ]).all_chapters is True
 
 
 def test_output_paths() -> None:
@@ -85,11 +147,9 @@ def test_output_paths() -> None:
     assert FULL_PATH.name == "2epub_full.epub"
 
 
-def test_book_paths_default_to_bundled_books() -> None:
-    args = _build_parser().parse_args([])
-    assert args.en == EN_PATH
-    assert args.ru == RU_PATH
-    assert args.output is None
+def test_book_paths_are_required() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args([])
 
 
 def test_custom_paths_parsed() -> None:
@@ -111,16 +171,80 @@ def test_validate_book_path_accepts_existing_fb2(tmp_path) -> None:
     assert _validate_book_path(f, "English") == f
 
 
+def test_validate_book_path_accepts_epub(tmp_path) -> None:
+    f = tmp_path / "book.epub"
+    f.write_bytes(b"not parsed by path validation")
+    assert _validate_book_path(f, "English") == f
+
+
 def test_validate_book_path_rejects_missing(tmp_path) -> None:
     with pytest.raises(SystemExit, match="not found"):
         _validate_book_path(tmp_path / "missing.fb2", "English")
 
 
 def test_validate_book_path_rejects_non_fb2(tmp_path) -> None:
-    f = tmp_path / "book.epub"
+    f = tmp_path / "book.txt"
     f.write_text("x")
-    with pytest.raises(SystemExit, match=r"\.fb2"):
+    with pytest.raises(SystemExit, match=r"\.fb2 or \.epub"):
         _validate_book_path(f, "Russian")
+
+
+@pytest.mark.parametrize(
+    ("en_ext", "ru_ext"),
+    [(".fb2", ".fb2"), (".fb2", ".epub"),
+     (".epub", ".fb2"), (".epub", ".epub")],
+)
+def test_all_input_format_combinations(
+    tmp_path, en_ext: str, ru_ext: str,
+) -> None:
+    en_path = tmp_path / f"en{en_ext}"
+    ru_path = tmp_path / f"ru{ru_ext}"
+    writers = {".fb2": _write_minimal_fb2, ".epub": _write_minimal_epub}
+    writers[en_ext](en_path)
+    writers[ru_ext](ru_path)
+
+    en_book = _parse_book(_validate_book_path(en_path, "English"))
+    ru_book = _parse_book(_validate_book_path(ru_path, "Russian"))
+
+    assert en_book.format == en_ext[1:]
+    assert ru_book.format == ru_ext[1:]
+    pairs = align_chapters(en_book, ru_book)["pairs"]
+    assert len(pairs) == 1
+    assert pairs[0]["en_title"] == pairs[0]["ru_title"] == "Sample"
+
+
+def test_source_assets_preserve_cover_and_inline_images(tmp_path) -> None:
+    for ext, writer, inline_key, cover_key in (
+        (".fb2", _write_minimal_fb2, "inline", "cover"),
+        (
+            ".epub", _write_minimal_epub,
+            "images/inline.png", "cover.jpg",
+        ),
+    ):
+        path = tmp_path / f"source{ext}"
+        writer(path)
+        book = _parse_book(path)
+        images, actual_cover_key = _source_assets(path)
+        paragraph_image_keys = {
+            _image_key(image["src"])
+            for chapter in book.chapters
+            for paragraph in chapter.paragraphs
+            for image in paragraph.images
+        }
+
+        assert actual_cover_key == cover_key
+        assert inline_key in images
+        assert inline_key in paragraph_image_keys
+        assert images[actual_cover_key][1].endswith(b"cover")
+        image_paths = _image_file_names(paragraph_image_keys, images)
+        assert image_paths[inline_key].startswith("images/")
+
+
+def test_missing_english_or_russian_file_is_reported(tmp_path) -> None:
+    missing = tmp_path / "missing.fb2"
+    for label in ("English", "Russian"):
+        with pytest.raises(SystemExit, match=f"{label} book not found"):
+            _validate_book_path(missing, label)
 
 
 # --- chapter plan -------------------------------------------------------

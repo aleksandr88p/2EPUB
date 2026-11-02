@@ -1,5 +1,4 @@
-"""Build a bilingual EPUB from an English FB2 book and its Russian
-translation (defaults: the bundled test books).
+"""Build a bilingual EPUB from English and Russian EPUB or FB2 books.
 
 Two modes:
 
@@ -26,7 +25,7 @@ structure); they are listed in the run report instead.
 
 Run:  venv/bin/python experiments/build_preview_epub.py [--all]
       venv/bin/python experiments/build_preview_epub.py \
-          --en books/english.fb2 --ru books/russian.fb2 \
+          --en books/english.epub --ru books/russian.fb2 \
           --output output/my_book.epub --all
 """
 
@@ -34,12 +33,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import posixpath
 import sys
+import uuid
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import numpy as np
 from bs4 import BeautifulSoup
-from ebooklib import epub, ITEM_DOCUMENT
+from ebooklib import epub, ITEM_COVER, ITEM_DOCUMENT
 from html import escape
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,8 +49,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from bookparse.chapter_alignment import align_chapters  # noqa: E402
 from bookparse.embedding_cache import embed_with_cache  # noqa: E402
+from bookparse.epub_parser import parse_epub  # noqa: E402
 from bookparse.fb2_parser import parse_fb2  # noqa: E402
-from bookparse.models import Chapter, Paragraph  # noqa: E402
+from bookparse.models import Book, Chapter, Paragraph  # noqa: E402
 from bookparse.paragraph_reconstruction import (  # noqa: E402
     BilingualParagraph,
     rebuild_chapter,
@@ -58,8 +61,6 @@ from bookparse.sentence_alignment import (  # noqa: E402
     summarize_ops,
 )
 
-EN_PATH = PROJECT_ROOT / "books" / "blade itslef.fb2"
-RU_PATH = PROJECT_ROOT / "books" / "1 Krov i zhelezo.fb2"
 MODELS_DIR = PROJECT_ROOT / "cache" / "models"
 EMB_DIR = PROJECT_ROOT / "cache" / "embeddings"
 PREVIEW_PATH = PROJECT_ROOT / "output" / "2epub_preview.epub"
@@ -81,8 +82,8 @@ def _rel(path: Path) -> Path | str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="build_preview_epub",
-        description="Build a bilingual EPUB from an English FB2 book "
-                    "and its Russian translation.",
+        description="Build a bilingual EPUB from English and Russian "
+                    "EPUB or FB2 books.",
     )
     parser.add_argument(
         "--all", action="store_true", dest="all_chapters",
@@ -91,12 +92,12 @@ def _build_parser() -> argparse.ArgumentParser:
              % N_CHAPTERS,
     )
     parser.add_argument(
-        "--en", type=Path, default=EN_PATH, metavar="PATH",
-        help="path to the English .fb2 book (default: %s)" % _rel(EN_PATH),
+        "--en", type=Path, required=True, metavar="PATH",
+        help="path to the English original (.fb2 or .epub)",
     )
     parser.add_argument(
-        "--ru", type=Path, default=RU_PATH, metavar="PATH",
-        help="path to the Russian .fb2 book (default: %s)" % _rel(RU_PATH),
+        "--ru", type=Path, required=True, metavar="PATH",
+        help="path to the Russian translation (.fb2 or .epub)",
     )
     parser.add_argument(
         "--output", type=Path, default=None, metavar="PATH",
@@ -111,15 +112,24 @@ def _output_path(all_chapters: bool) -> Path:
 
 
 def _validate_book_path(path: Path, label: str) -> Path:
-    """Return `path` if it is an existing .fb2 file, else abort with a
-    readable error instead of a parser traceback."""
+    """Validate an input book path and report user-facing errors."""
     if not path.is_file():
         raise SystemExit(f"error: {label} book not found: {path}")
-    if path.suffix.lower() != ".fb2":
+    if path.suffix.lower() not in {".fb2", ".epub"}:
         raise SystemExit(
-            f"error: {label} book must be a .fb2 file: {path}"
+            f"error: {label} book must be a .fb2 or .epub file: {path}"
         )
     return path
+
+
+def _parse_book(path: Path) -> Book:
+    """Select the existing parser from the input file extension."""
+    if path.suffix.lower() == ".fb2":
+        return parse_fb2(path)
+    if path.suffix.lower() == ".epub":
+        return parse_epub(path)
+    raise ValueError(f"unsupported book format: {path.suffix}")
+
 
 _CSS = """\
 p.en { font-weight: bold; margin: 0.4em 0 0 0; }
@@ -165,11 +175,89 @@ def _fb2_cover_id(soup: BeautifulSoup) -> str | None:
     return href.lstrip("#") if href else None
 
 
-def _img_file_name(image_id: str, media_type: str) -> str:
-    name = image_id if "." in image_id else image_id + _MIME_EXT.get(
-        media_type, ".jpg"
+def _source_assets(
+    path: Path,
+) -> tuple[dict[str, tuple[str, bytes]], str | None]:
+    """Return image assets keyed by parsed references and the cover key."""
+    if path.suffix.lower() == ".fb2":
+        soup = _fb2_soup(path)
+        return _fb2_binaries(soup), _fb2_cover_id(soup)
+
+    source = epub.read_epub(str(path))
+    images = {
+        PurePosixPath(item.get_name()).as_posix():
+            (item.media_type, item.get_content())
+        for item in source.get_items()
+        if (item.media_type or "").startswith("image/")
+    }
+
+    cover_id = next(
+        (
+            attrs.get("content")
+            for _, attrs in source.get_metadata("OPF", "meta")
+            if attrs.get("name") == "cover"
+        ),
+        None,
     )
-    return f"images/{name}"
+    cover_item = source.get_item_with_id(cover_id) if cover_id else None
+    if cover_item is None:
+        cover_item = next(
+            (
+                item for item in source.get_items()
+                if "cover-image" in getattr(item, "properties", [])
+            ),
+            None,
+        )
+    if cover_item is None:
+        cover_item = next(
+            (
+                item for item in source.get_items()
+                if item.get_type() == ITEM_COVER
+            ),
+            None,
+        )
+    cover_key = (
+        PurePosixPath(cover_item.get_name()).as_posix()
+        if cover_item is not None
+        else None
+    )
+    return images, cover_key
+
+
+def _image_key(src: str | None) -> str:
+    return src[1:] if src and src.startswith("#") else (src or "")
+
+
+def _image_file_names(
+    image_keys: set[str],
+    images: dict[str, tuple[str, bytes]],
+) -> dict[str, str]:
+    """Assign collision-free output paths to the referenced source images."""
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for key in sorted(image_keys):
+        if key not in images:
+            continue
+        media_type, _ = images[key]
+        name = PurePosixPath(key).name or "image"
+        stem, suffix = posixpath.splitext(name)
+        if not suffix:
+            suffix = _MIME_EXT.get(media_type, ".img")
+        candidate = f"images/{stem}{suffix}"
+        serial = 2
+        while candidate in used:
+            candidate = f"images/{stem}_{serial}{suffix}"
+            serial += 1
+        used.add(candidate)
+        out[key] = candidate
+    return out
+
+
+def _cover_file_name(source_key: str, media_type: str) -> str:
+    suffix = PurePosixPath(source_key).suffix or _MIME_EXT.get(
+        media_type, ".jpg",
+    )
+    return f"cover{suffix}"
 
 
 # --- XHTML rendering --------------------------------------------------
@@ -181,25 +269,27 @@ def _render_paragraph(
 ) -> str:
     """One EN block + its RU translation block.
 
-    `img_files` maps FB2 binary ids to in-EPUB paths; it is filled
-    lazily by the caller for every image actually used.
+    `img_files` maps source image references to in-EPUB paths.
     """
     en_text = " ".join(bp.en_sentences)
     ru_text = " ".join(bp.ru_sentences)
 
+    image_tags = []
+    for img in src.images:
+        source_key = _image_key(img.get("src"))
+        file_name = img_files.get(source_key)
+        if file_name:
+            alt = escape(img.get("alt") or "", quote=True)
+            image_tags.append(f'<img src="{file_name}" alt="{alt}" />')
+    image_block = (
+        f'<div class="en-img">{"".join(image_tags)}</div>'
+        if image_tags else ""
+    )
+
     if bp.type == "empty-line" and not en_text:
         en_block = '<p class="en empty-line">&#160;</p>'
     elif bp.type == "image" or (src.images and not en_text):
-        tags = []
-        for img in src.images:
-            src_id = (img.get("src") or "").lstrip("#")
-            file_name = img_files.get(src_id)
-            if file_name:
-                alt = escape(img.get("alt") or "", quote=True)
-                tags.append(
-                    f'<img src="{file_name}" alt="{alt}" />'
-                )
-        en_block = f'<div class="en-img">{"".join(tags)}</div>'
+        en_block = image_block
     elif bp.type == "heading":
         en_block = f'<h2 class="en">{escape(en_text)}</h2>'
     else:
@@ -207,6 +297,7 @@ def _render_paragraph(
             f'<p class="en {escape(bp.type, quote=True)}">'
             f"<strong>{escape(en_text)}</strong></p>"
         )
+        en_block += image_block
 
     ru_block = f'<p class="ru">{escape(ru_text)}</p>' if ru_text else ""
 
@@ -393,8 +484,8 @@ def main(argv: list[str] | None = None) -> int:
     ru_path = _validate_book_path(args.ru, "Russian")
     out_path = args.output or _output_path(args.all_chapters)
 
-    en_book = parse_fb2(en_path)
-    ru_book = parse_fb2(ru_path)
+    en_book = _parse_book(en_path)
+    ru_book = _parse_book(ru_path)
     alignment = align_chapters(en_book, ru_book)
     all_pairs = alignment["pairs"]
     pairs = all_pairs if args.all_chapters else all_pairs[:N_CHAPTERS]
@@ -442,21 +533,17 @@ def main(argv: list[str] | None = None) -> int:
         aligned.append((en_ch, ru_ch, bps))
 
     # --- collect EN images actually referenced ------------------------
-    en_soup = _fb2_soup(en_path)
-    binaries = _fb2_binaries(en_soup)
-    img_files: dict[str, str] = {}
+    images, cover_key = _source_assets(en_path)
+    image_keys: set[str] = set()
     for en_ch, _, bps in aligned:
         for bp in bps:
             for img in en_ch.paragraphs[bp.index].images:
-                src_id = (img.get("src") or "").lstrip("#")
-                if src_id in binaries and src_id not in img_files:
-                    img_files[src_id] = _img_file_name(
-                        src_id, binaries[src_id][0]
-                    )
+                image_keys.add(_image_key(img.get("src")))
+    img_files = _image_file_names(image_keys, images)
 
     # --- assemble the EPUB ---------------------------------------------
     out_book = epub.EpubBook()
-    out_book.set_identifier("2epub-the-blade-itself")
+    out_book.set_identifier(str(uuid.uuid4()))
     mode = "full" if args.all_chapters else "preview"
     out_book.set_title(
         f"{en_book.metadata.get('title', '')} — bilingual {mode}"
@@ -467,11 +554,10 @@ def main(argv: list[str] | None = None) -> int:
     if author:
         out_book.add_author(author)
 
-    cover_id = _fb2_cover_id(en_soup)
     cover_page = None
-    if cover_id and cover_id in binaries:
-        media, data = binaries[cover_id]
-        name = cover_id if "." in cover_id else f"cover{_MIME_EXT.get(media, '.jpg')}"
+    if cover_key and cover_key in images:
+        media, data = images[cover_key]
+        name = _cover_file_name(cover_key, media)
         out_book.set_cover(name, data)
         cover_page = out_book.get_item_with_id("cover")
         print(f"Cover: {name} ({media}, {len(data)} bytes)")
@@ -484,10 +570,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_book.add_item(style)
 
-    for src_id, file_name in img_files.items():
-        media, data = binaries[src_id]
+    for image_index, (image_key, file_name) in enumerate(img_files.items(), 1):
+        media, data = images[image_key]
         out_book.add_item(epub.EpubItem(
-            uid=f"img-{src_id}", file_name=file_name,
+            uid=f"img-{image_index}", file_name=file_name,
             media_type=media, content=data,
         ))
         print(f"Image: {file_name} ({media}, {len(data)} bytes)")
