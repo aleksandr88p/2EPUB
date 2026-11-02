@@ -2,7 +2,9 @@ venv/
 .env
 __pycache__/
 .pytest_cache/
-books/
+books/*
+!books/.gitkeep
 cache/
-output/
+output/*
+!output/.gitkeep
 .DS_Store

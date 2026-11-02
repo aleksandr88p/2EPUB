@@ -28,3 +28,7 @@ English paragraphs must be bold, followed by their Russian translations.
 - Do not implement features beyond the current task.
 - Explain important architectural decisions.
 - Never modify unrelated files without permission.
+
+## Progress
+- At the start of each session, read PROGRESS.md.
+- After each task, update PROGRESS.md with completed work, test results, and the next task.
