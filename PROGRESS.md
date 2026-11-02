@@ -22,6 +22,9 @@ Project status: **Experimental MVP v0.1**
   generator and builds the full book by default. `--preview` selects the
   first two aligned chapter pairs; `--output` overrides the default
   `output/2epub.epub`.
+- The user-facing CLI provides `check`, `build`, `align-chapters`, and
+  `parse`. The separate commands remain available; ordinary use only
+  requires `check` and `build`.
 - Sentence alignment uses local Qwen3-Embedding-0.6B, a disk cache, and a
   joined-text group scorer. Sentence DP emits `1:1`, `1:2`, `2:1`,
   `skip_en`, and `skip_ru`.
@@ -44,8 +47,14 @@ Project status: **Experimental MVP v0.1**
 - A generated EPUB is reported as successful only after verification
   passes. Verification failures return non-zero and report failure.
 - A full test book, **The Blade Itself / «Кровь и железо»**, was generated:
-  52 XHTML sections, 48 paired chapters, and 4 EN-only chapters. The
-  generator log reports successful structural and text-completeness checks.
+  from FB2 + FB2, with 52 XHTML sections, 48 paired chapters, and 4
+  EN-only chapters. Structural and text-completeness checks passed.
+- **Lost Gods** was fully generated from EPUB + FB2 using the real Qwen
+  model: 116 XHTML sections, 110 paired chapters, and 6 EN-only chapters.
+  Structure, text-completeness, and image-link checks passed. Preflight
+  reported `PROCEED WITH CAUTION` with 6 warnings; chapter alignment had
+  109 confident pairs and 1 doubtful pair. The generated file was
+  `output/Lost_Gods_bilingual.epub`.
 
 ## Implemented separately from the main converter
 
@@ -81,18 +90,15 @@ Project status: **Experimental MVP v0.1**
 - The model runs locally, but initial download and generation can take
   time and require sufficient machine resources.
 
-## Required work to complete the MVP
+## Remaining MVP verification
 
-- Update both `README.md` and `README.ru.md` to document the final,
-  verified workflow and supported input combinations.
-- Complete and document an independent QA audit of the current bilingual
-  EPUB; investigate confirmed alignment errors.
+- Complete and document an independent semantic QA audit of the two
+  generated books; review the previously reported 5 MAJOR and 1 MINOR
+  issues on *The Blade Itself*.
 - Evaluate alignment on additional books and translations.
-- Improve paragraph-boundary alignment based on QA findings.
-- Define MVP acceptance criteria and check generated EPUBs in target
-  reading applications.
+- Check the generated EPUBs in target reading applications.
 
-These items are planned work, not currently available features.
+These are validation tasks, not missing CLI or conversion features.
 
 ## Tests and verification
 
