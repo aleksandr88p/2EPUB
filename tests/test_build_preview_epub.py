@@ -14,8 +14,10 @@ import pytest
 from ebooklib import epub
 
 from bookparse.chapter_alignment import align_chapters
+from bookparse.checks import ERROR, WARNING, Issue
 from bookparse.models import Book, Chapter, Paragraph, Sentence
 from bookparse.paragraph_reconstruction import BilingualParagraph
+from experiments import build_preview_epub as builder
 from experiments.build_preview_epub import (
     FULL_PATH,
     PREVIEW_PATH,
@@ -245,6 +247,91 @@ def test_missing_english_or_russian_file_is_reported(tmp_path) -> None:
     for label in ("English", "Russian"):
         with pytest.raises(SystemExit, match=f"{label} book not found"):
             _validate_book_path(missing, label)
+
+
+def test_preflight_ok_allows_conversion(monkeypatch, capsys) -> None:
+    book = _book([])
+    monkeypatch.setattr(
+        builder, "build_report", lambda en, ru: ("VERDICT: OK", []),
+    )
+
+    assert builder._run_preflight(book, book) is True
+    captured = capsys.readouterr().out
+    assert "VERDICT: OK" in captured
+    assert "Preflight: OK; continuing." in captured
+
+
+def test_preflight_warning_allows_full_cli_generation(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    en_path = tmp_path / "en.fb2"
+    ru_path = tmp_path / "ru.epub"
+    output_path = tmp_path / "nested" / "preview.epub"
+    en_path.write_text("placeholder")
+    ru_path.write_text("placeholder")
+
+    en_book = _book([_chapter(
+        0, "Sample", paras=[_paragraph("English sentence.")],
+    )])
+    ru_book = _book([])
+    parsed = {en_path: en_book, ru_path: ru_book}
+    report_calls = []
+
+    monkeypatch.setattr(builder, "_parse_book", lambda path: parsed[path])
+    monkeypatch.setattr(
+        builder, "build_report",
+        lambda en, ru: (
+            report_calls.append((en, ru))
+            or ("PREFLIGHT WARNING\nVERDICT: PROCEED WITH CAUTION", [
+                Issue(WARNING, "english", "sample-warning", "Review this."),
+            ])
+        ),
+    )
+    monkeypatch.setattr(builder, "_source_assets", lambda path: ({}, None))
+
+    result = builder.main([
+        "--en", str(en_path), "--ru", str(ru_path),
+        "--output", str(output_path), "--all",
+    ])
+
+    captured = capsys.readouterr().out
+    assert result == 0
+    assert output_path.is_file()
+    assert report_calls == [(en_book, ru_book)]
+    assert "PREFLIGHT WARNING" in captured
+    assert "Preflight: 1 warning(s); continuing." in captured
+
+
+def test_preflight_error_stops_before_alignment_or_generation(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    en_path = tmp_path / "en.fb2"
+    ru_path = tmp_path / "ru.fb2"
+    output_path = tmp_path / "must-not-exist.epub"
+    en_path.write_text("placeholder")
+    ru_path.write_text("placeholder")
+    book = _book([])
+
+    monkeypatch.setattr(builder, "_parse_book", lambda _path: book)
+    monkeypatch.setattr(
+        builder, "build_report",
+        lambda _en, _ru: ("PREFLIGHT ERROR\nVERDICT: STOP", [
+            Issue(ERROR, "english", "invalid-source", "Cannot align."),
+        ]),
+    )
+    monkeypatch.setattr(
+        builder, "align_chapters",
+        lambda *_args: pytest.fail("alignment must not start after ERROR"),
+    )
+
+    result = builder.main([
+        "--en", str(en_path), "--ru", str(ru_path),
+        "--output", str(output_path), "--all",
+    ])
+
+    assert result != 0
+    assert not output_path.exists()
+    assert "Preflight: ERROR — conversion stopped." in capsys.readouterr().out
 
 
 # --- chapter plan -------------------------------------------------------

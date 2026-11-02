@@ -28,6 +28,11 @@ Project status: **Experimental MVP v0.1**
   English cover and referenced English images from either FB2 or EPUB;
   and checks chapter count/order, XHTML, text against the parsed
   representation, and image references.
+- After parsing both books, the builder runs the existing
+  `bookparse.checks.build_report()` preflight before chapter alignment or
+  loading Qwen. It prints the report, stops with a non-zero exit status
+  for ERROR/STOP, and continues with a visible warning summary for
+  WARNING. The separate `python -m bookparse check` command is unchanged.
 - A full test book, **The Blade Itself / «Кровь и железо»**, was generated:
   52 XHTML sections, 48 paired chapters, and 4 EN-only chapters. The
   generator log reports successful structural and text-completeness checks.
@@ -37,8 +42,7 @@ Project status: **Experimental MVP v0.1**
 - `parse_epub` and `bookparse parse/check/align-chapters` also work as
   separate tools.
 - `checks.py` contains heuristic source checks and cross-book comparison.
-  They run through the separate `bookparse check` command, not
-  automatically before EPUB generation.
+  These are also available through the separate `bookparse check` command.
 - `bookparse align-chapters` separately saves a JSON alignment result.
   The builder performs chapter alignment directly.
 - `experiments/paragraph_preview.py`,
@@ -69,8 +73,6 @@ Project status: **Experimental MVP v0.1**
 
 ## Required work to complete the MVP
 
-- Add an **automatic preflight check** to the converter workflow; source
-  checks currently require a separate CLI command.
 - Add and run an automated **full CLI end-to-end scenario** covering
   argument handling, preflight, conversion, and result verification.
 - Update both `README.md` and `README.ru.md` to document the final,
@@ -90,15 +92,16 @@ Most recent full test run:
 
 ```text
 venv/bin/python -m pytest
-94 passed in 1.03s
+97 passed in 0.99s
 ```
 
 Tests cover chapter alignment, sentence alignment, parsers, heuristic
 checks, cache, paragraph reconstruction, and builder/EPUB verification.
 Builder tests exercise all four input format combinations, unsupported
 formats and missing paths, plus image/cover extraction. Alignment and
-builder tests use controlled test data; pytest does not rerun the
-full-book conversion.
+builder tests use controlled test data. Preflight tests cover OK,
+WARNING, and ERROR (including stopping before alignment); pytest does
+not rerun the full-book conversion.
 
 ## Key files
 

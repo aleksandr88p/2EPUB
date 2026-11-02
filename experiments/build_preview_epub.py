@@ -48,6 +48,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from bookparse.chapter_alignment import align_chapters  # noqa: E402
+from bookparse.checks import ERROR, WARNING, build_report  # noqa: E402
 from bookparse.embedding_cache import embed_with_cache  # noqa: E402
 from bookparse.epub_parser import parse_epub  # noqa: E402
 from bookparse.fb2_parser import parse_fb2  # noqa: E402
@@ -120,6 +121,25 @@ def _validate_book_path(path: Path, label: str) -> Path:
             f"error: {label} book must be a .fb2 or .epub file: {path}"
         )
     return path
+
+
+def _run_preflight(en_book: Book, ru_book: Book) -> bool:
+    """Print source checks and return False when alignment must stop."""
+    report, issues = build_report(en_book, ru_book)
+    print(report)
+
+    has_error = any(issue.level == ERROR for issue in issues)
+    has_stop_verdict = "VERDICT: STOP" in report
+    if has_error or has_stop_verdict:
+        print("Preflight: ERROR — conversion stopped.")
+        return False
+
+    warning_count = sum(issue.level == WARNING for issue in issues)
+    if warning_count:
+        print(f"Preflight: {warning_count} warning(s); continuing.")
+    else:
+        print("Preflight: OK; continuing.")
+    return True
 
 
 def _parse_book(path: Path) -> Book:
@@ -486,6 +506,9 @@ def main(argv: list[str] | None = None) -> int:
 
     en_book = _parse_book(en_path)
     ru_book = _parse_book(ru_path)
+    if not _run_preflight(en_book, ru_book):
+        return 2
+
     alignment = align_chapters(en_book, ru_book)
     all_pairs = alignment["pairs"]
     pairs = all_pairs if args.all_chapters else all_pairs[:N_CHAPTERS]
