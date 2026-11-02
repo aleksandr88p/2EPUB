@@ -630,7 +630,6 @@ def main(argv: list[str] | None = None) -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     epub.write_epub(str(out_path), out_book)
-    print(f"\nWritten: {out_path} ({out_path.stat().st_size} bytes)")
 
     # --- verification ----------------------------------------------------
     checks = _verify(out_path, expected)
@@ -638,6 +637,14 @@ def main(argv: list[str] | None = None) -> int:
     for label, passed in checks:
         ok &= passed
         print(f"  [{'OK' if passed else 'FAIL'}] {label}")
+    if not ok:
+        print("\nConversion failed: EPUB verification did not pass.")
+        return 1
+
+    print(
+        f"\nSuccessfully converted: {out_path} "
+        f"({out_path.stat().st_size} bytes)"
+    )
 
     # --- summary ----------------------------------------------------------
     print("\nPer-chapter summary:")
@@ -684,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
             reason = c.get("service_reason") or "unmatched"
             print(f"  {c['chapter_id']} {c['title']!r} "
                   f"({c['words']} w) [{reason}]")
-    return 0 if ok else 1
+    return 0
 
 
 if __name__ == "__main__":

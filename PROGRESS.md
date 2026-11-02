@@ -33,6 +33,12 @@ Project status: **Experimental MVP v0.1**
   loading Qwen. It prints the report, stops with a non-zero exit status
   for ERROR/STOP, and continues with a visible warning summary for
   WARNING. The separate `python -m bookparse check` command is unchanged.
+- The converter's main CLI path has automated end-to-end coverage for all
+  four FB2/EPUB input combinations. Tests use small real books and stub
+  only Qwen/model inference; parsing, preflight, chapter/sentence
+  alignment, EPUB generation, and EPUB verification run normally.
+- A generated EPUB is reported as successful only after verification
+  passes. Verification failures return non-zero and report failure.
 - A full test book, **The Blade Itself / «Кровь и железо»**, was generated:
   52 XHTML sections, 48 paired chapters, and 4 EN-only chapters. The
   generator log reports successful structural and text-completeness checks.
@@ -73,8 +79,6 @@ Project status: **Experimental MVP v0.1**
 
 ## Required work to complete the MVP
 
-- Add and run an automated **full CLI end-to-end scenario** covering
-  argument handling, preflight, conversion, and result verification.
 - Update both `README.md` and `README.ru.md` to document the final,
   verified workflow and supported input combinations.
 - Complete and document an independent QA audit of the current bilingual
@@ -92,7 +96,7 @@ Most recent full test run:
 
 ```text
 venv/bin/python -m pytest
-97 passed in 0.99s
+102 passed in 1.07s
 ```
 
 Tests cover chapter alignment, sentence alignment, parsers, heuristic
@@ -100,8 +104,10 @@ checks, cache, paragraph reconstruction, and builder/EPUB verification.
 Builder tests exercise all four input format combinations, unsupported
 formats and missing paths, plus image/cover extraction. Alignment and
 builder tests use controlled test data. Preflight tests cover OK,
-WARNING, and ERROR (including stopping before alignment); pytest does
-not rerun the full-book conversion.
+WARNING, and ERROR (including stopping before alignment); end-to-end
+tests verify EN/RU chapter text and order, images, and cover in the
+generated EPUB. Qwen is stubbed in tests; pytest does not rerun the
+full-book conversion.
 
 ## Key files
 
