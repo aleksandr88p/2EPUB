@@ -14,6 +14,7 @@ from .fb2_parser import parse_fb2
 from .models import Book
 
 PARSERS = {".epub": parse_epub, ".fb2": parse_fb2}
+DEFAULT_BUILD_OUTPUT = Path("output") / "2epub.epub"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,23 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.add_argument(
         "-o", "--output", type=Path, default=None,
         help="optional path to save the text report",
+    )
+    build_cmd = sub.add_parser(
+        "build", help="build a bilingual EPUB from English and Russian books",
+    )
+    build_cmd.add_argument(
+        "english", type=Path, help="English original (.epub or .fb2)",
+    )
+    build_cmd.add_argument(
+        "russian", type=Path, help="Russian translation (.epub or .fb2)",
+    )
+    build_cmd.add_argument(
+        "--preview", action="store_true",
+        help="build only the first two aligned chapter pairs",
+    )
+    build_cmd.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help=f"output EPUB path (default: {DEFAULT_BUILD_OUTPUT})",
     )
     align_cmd = sub.add_parser(
         "align-chapters",
@@ -123,12 +141,25 @@ def run_align(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_build(args: argparse.Namespace) -> int:
+    """Delegate conversion to the existing EPUB builder."""
+    from experiments.build_preview_epub import main as build_epub
+
+    argv = ["--en", str(args.english), "--ru", str(args.russian)]
+    if not args.preview:
+        argv.append("--all")
+    argv.extend(["--output", str(args.output or DEFAULT_BUILD_OUTPUT)])
+    return build_epub(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "parse":
         run_parse(args)
     elif args.command == "check":
         return run_check(args)
+    elif args.command == "build":
+        return run_build(args)
     elif args.command == "align-chapters":
         return run_align(args)
     return 0

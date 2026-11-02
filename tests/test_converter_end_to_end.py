@@ -17,6 +17,7 @@ import pytest
 from bs4 import BeautifulSoup
 from ebooklib import epub, ITEM_DOCUMENT
 
+from bookparse.cli import main as bookparse_main
 from experiments import build_preview_epub as builder
 
 PIXEL_PNG = base64.b64decode(
@@ -171,9 +172,9 @@ def test_full_converter_cli_succeeds_for_all_input_formats(
     _write_input(en_path, "en")
     _write_input(ru_path, "ru")
 
-    result = builder.main([
-        "--en", str(en_path), "--ru", str(ru_path),
-        "--output", str(output_path), "--all",
+    result = bookparse_main([
+        "build", str(en_path), str(ru_path),
+        "--output", str(output_path),
     ])
 
     log = capsys.readouterr().out
@@ -236,9 +237,9 @@ def test_post_generation_verification_error_is_not_reported_as_success(
         builder, "_verify", lambda *_args: [("forced failure", False)],
     )
 
-    result = builder.main([
-        "--en", str(en_path), "--ru", str(ru_path),
-        "--output", str(output_path), "--all",
+    result = bookparse_main([
+        "build", str(en_path), str(ru_path),
+        "--output", str(output_path),
     ])
 
     log = capsys.readouterr().out

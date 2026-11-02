@@ -18,6 +18,10 @@ Project status: **Experimental MVP v0.1**
   for each input. All four format combinations are supported. Preview
   includes the first two aligned chapter pairs; `--all` processes every
   pair and keeps remaining English chapters without a translation.
+- `python -m bookparse build EN RU` delegates to the existing EPUB
+  generator and builds the full book by default. `--preview` selects the
+  first two aligned chapter pairs; `--output` overrides the default
+  `output/2epub.epub`.
 - Sentence alignment uses local Qwen3-Embedding-0.6B, a disk cache, and a
   joined-text group scorer. Sentence DP emits `1:1`, `1:2`, `2:1`,
   `skip_en`, and `skip_ru`.
@@ -96,11 +100,12 @@ Most recent full test run:
 
 ```text
 venv/bin/python -m pytest
-102 passed in 1.07s
+105 passed in 1.10s
 ```
 
 Tests cover chapter alignment, sentence alignment, parsers, heuristic
-checks, cache, paragraph reconstruction, and builder/EPUB verification.
+checks, cache, paragraph reconstruction, user-facing CLI, and
+builder/EPUB verification.
 Builder tests exercise all four input format combinations, unsupported
 formats and missing paths, plus image/cover extraction. Alignment and
 builder tests use controlled test data. Preflight tests cover OK,
