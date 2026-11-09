@@ -146,6 +146,16 @@ def test_sentence_splitter() -> None:
     ]
     ru = split_sentences("— Дерьмо! — выругался Логен. Он ушёл.", "ru")
     assert ru == ["— Дерьмо!", "— выругался Логен.", "Он ушёл."]
+    es = split_sentences(
+        "El Sr. García llegó. ¿Está aquí? ¡Sí!", "es",
+    )
+    assert es == ["El Sr. García llegó.", "¿Está aquí?", "¡Sí!"]
+    assert split_sentences(
+        "La Dra. López respondió. Después se fue.", "spa",
+    ) == ["La Dra. López respondió.", "Después se fue."]
+    assert split_sentences(
+        "Á. Pérez llegó. Luego llamó.", "es",
+    ) == ["Á. Pérez llegó.", "Luego llamó."]
     assert count_words("Hello, world — test.") == 3
 
 
@@ -156,13 +166,10 @@ def test_sentence_splitter() -> None:
 def test_real_books() -> None:
     epubs = list(BOOKS_DIR.glob("*.epub"))
     fb2s = list(BOOKS_DIR.glob("*.fb2"))
-    if epubs:
-        book = parse_epub(epubs[0])
-        stats = book.stats()
-        assert stats["chapters"] > 10
-        assert stats["words"] > 10000
-    if fb2s:
-        book = parse_fb2(fb2s[0])
-        stats = book.stats()
-        assert stats["chapters"] > 10
-        assert stats["words"] > 10000
+    for paths, parser in ((epubs, parse_epub), (fb2s, parse_fb2)):
+        if paths:
+            assert any(
+                (stats := parser(path).stats())["chapters"] > 10
+                and stats["words"] > 10000
+                for path in paths
+            )

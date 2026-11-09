@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlsplit
 from bs4 import BeautifulSoup, NavigableString, Tag
 from ebooklib import epub
 
+from .languages import normalize_language
 from .models import Book, Chapter, Paragraph, Sentence
 from .segment import split_sentences
 
@@ -125,7 +126,7 @@ class _ChapterBuilder:
 
     def __init__(self, book: Book, lang: str | None) -> None:
         self.book = book
-        self.lang = lang
+        self.lang = normalize_language(lang)
         self._para_n = 0
         self._sent_n = 0
 

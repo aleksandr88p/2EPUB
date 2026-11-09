@@ -224,22 +224,31 @@ def align_chapters(en: Book, ru: Book) -> dict[str, Any]:
     }
 
 
-def format_report(result: dict[str, Any]) -> str:
+def format_report(
+    result: dict[str, Any],
+    source_label: str = "English",
+    translation_label: str = "Russian",
+) -> str:
     """Human-readable summary of an alignment result."""
     q = result["quality"]
+    source_tag = "EN" if source_label == "English" else source_label
+    translation_tag = (
+        "RU" if translation_label == "Russian" else translation_label
+    )
     lines = [
         "CHAPTER ALIGNMENT REPORT",
-        f"English: {result['english_source']}",
-        f"Russian: {result['russian_source']}",
+        f"{source_label}: {result['english_source']}",
+        f"{translation_label}: {result['russian_source']}",
         "",
         f"Paired chapters:      {q['pairs_total']} "
         f"(confident {q['confident']}, doubtful {q['doubtful']})",
-        f"Unmatched EN chapters: {q['unmatched_english']}",
-        f"Unmatched RU chapters: {q['unmatched_russian']}",
-        f"Word coverage: EN {q['word_coverage_en']:.2%}, "
-        f"RU {q['word_coverage_ru']:.2%}",
-        f"Service sections: EN {len(result['service']['english'])}, "
-        f"RU {len(result['service']['russian'])}",
+        f"Unmatched {source_tag} chapters: {q['unmatched_english']}",
+        f"Unmatched {translation_tag} chapters: {q['unmatched_russian']}",
+        f"Word coverage: {source_tag} {q['word_coverage_en']:.2%}, "
+        f"{translation_tag} {q['word_coverage_ru']:.2%}",
+        f"Service sections: {source_tag} "
+        f"{len(result['service']['english'])}, "
+        f"{translation_tag} {len(result['service']['russian'])}",
     ]
 
     doubtful = [p for p in result["pairs"] if p["quality"] == "doubtful"]
@@ -252,7 +261,9 @@ def format_report(result: dict[str, Any]) -> str:
                 f"[{', '.join(p['reasons'])}]"
             )
 
-    for side, key in (("English", "english"), ("Russian", "russian")):
+    for side, key in (
+        (source_tag, "english"), (translation_tag, "russian"),
+    ):
         un = result["unmatched"][key]
         if un:
             lines.append(f"Unmatched {side} chapters:")

@@ -11,17 +11,34 @@ from .chapter_alignment import align_chapters, format_report
 from .checks import ERROR, build_report
 from .epub_parser import parse_epub
 from .fb2_parser import parse_fb2
+from .languages import (
+    UnsupportedLanguageError,
+    language_name,
+    normalize_language,
+    resolve_language_pair,
+)
 from .models import Book
 
 PARSERS = {".epub": parse_epub, ".fb2": parse_fb2}
 DEFAULT_BUILD_OUTPUT = Path("output") / "2epub.epub"
 
 
+def _add_language_overrides(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--source-lang", default=None, metavar="CODE",
+        help="override original language (en, ru, es; default: book metadata)",
+    )
+    command.add_argument(
+        "--translation-lang", default=None, metavar="CODE",
+        help="override translation language (en, ru, es; default: book metadata)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bookparse",
-        description="Extract structure (chapters, paragraphs, sentences) "
-                    "from EPUB/FB2 books into JSON.",
+        description="Parse, check, align, and build bilingual EPUB books "
+                    "from EPUB/FB2 files.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     parse_cmd = sub.add_parser("parse", help="parse a book file")
@@ -32,25 +49,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parse_cmd.add_argument(
         "--lang", default=None,
-        help="override language for sentence splitting (default: book metadata)",
+        help="override segmentation language (en, ru, es; default: metadata)",
     )
     check_cmd = sub.add_parser(
-        "check", help="preflight validation of English + Russian sources",
+        "check", help="preflight validation of a source and its translation",
     )
-    check_cmd.add_argument("english", type=Path, help="path to English .epub/.fb2")
-    check_cmd.add_argument("russian", type=Path, help="path to Russian .epub/.fb2")
+    check_cmd.add_argument(
+        "english", type=Path, metavar="SOURCE",
+        help="original/source book (.epub or .fb2)",
+    )
+    check_cmd.add_argument(
+        "russian", type=Path, metavar="TRANSLATION",
+        help="translated book (.epub or .fb2)",
+    )
     check_cmd.add_argument(
         "-o", "--output", type=Path, default=None,
         help="optional path to save the text report",
     )
+    _add_language_overrides(check_cmd)
     build_cmd = sub.add_parser(
-        "build", help="build a bilingual EPUB from English and Russian books",
+        "build", help="build a bilingual EPUB from an original and translation",
     )
     build_cmd.add_argument(
-        "english", type=Path, help="English original (.epub or .fb2)",
+        "english", type=Path, metavar="SOURCE",
+        help="original/source book (.epub or .fb2)",
     )
     build_cmd.add_argument(
-        "russian", type=Path, help="Russian translation (.epub or .fb2)",
+        "russian", type=Path, metavar="TRANSLATION",
+        help="translated book (.epub or .fb2)",
     )
     build_cmd.add_argument(
         "--preview", action="store_true",
@@ -60,16 +86,24 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", type=Path, default=None,
         help=f"output EPUB path (default: {DEFAULT_BUILD_OUTPUT})",
     )
+    _add_language_overrides(build_cmd)
     align_cmd = sub.add_parser(
         "align-chapters",
-        help="align chapters of English and Russian books (JSON result)",
+        help="align chapters of two books (JSON result)",
     )
-    align_cmd.add_argument("english", type=Path, help="path to English .epub/.fb2")
-    align_cmd.add_argument("russian", type=Path, help="path to Russian .epub/.fb2")
+    align_cmd.add_argument(
+        "english", type=Path, metavar="SOURCE",
+        help="original/source book (.epub or .fb2)",
+    )
+    align_cmd.add_argument(
+        "russian", type=Path, metavar="TRANSLATION",
+        help="translated book (.epub or .fb2)",
+    )
     align_cmd.add_argument(
         "-o", "--output", type=Path, default=None,
         help="output JSON path (default: cache/align_<en>--<ru>.json)",
     )
+    _add_language_overrides(align_cmd)
     return parser
 
 
@@ -82,7 +116,11 @@ def run_parse(args: argparse.Namespace) -> Book:
         raise SystemExit(
             f"error: unsupported format {path.suffix!r} (expected .epub or .fb2)"
         )
-    book = parser_fn(path, lang=args.lang)
+    try:
+        lang = normalize_language(args.lang)
+        book = parser_fn(path, lang=lang)
+    except UnsupportedLanguageError as exc:
+        raise SystemExit(f"error: {exc}") from None
 
     out = args.output or Path("cache") / f"{path.stem}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -101,7 +139,7 @@ def run_parse(args: argparse.Namespace) -> Book:
     return book
 
 
-def _parse_any(path: Path) -> Book:
+def _parse_any(path: Path, lang: str | None = None) -> Book:
     if not path.is_file():
         raise SystemExit(f"error: file not found: {path}")
     parser_fn = PARSERS.get(path.suffix.lower())
@@ -109,13 +147,37 @@ def _parse_any(path: Path) -> Book:
         raise SystemExit(
             f"error: unsupported format {path.suffix!r} (expected .epub or .fb2)"
         )
-    return parser_fn(path)
+    try:
+        normalized_lang = normalize_language(lang)
+        return parser_fn(path, lang=normalized_lang)
+    except UnsupportedLanguageError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+
+def _pair_labels(
+    source: Book,
+    translation: Book,
+    source_override: str | None,
+    translation_override: str | None,
+) -> tuple[str, str]:
+    try:
+        source_lang, translation_lang = resolve_language_pair(
+            source, translation, source_override, translation_override,
+        )
+    except UnsupportedLanguageError as exc:
+        raise SystemExit(f"error: {exc}") from None
+    return language_name(source_lang), language_name(translation_lang)
 
 
 def run_check(args: argparse.Namespace) -> int:
-    en = _parse_any(args.english)
-    ru = _parse_any(args.russian)
-    report, issues = build_report(en, ru)
+    source = _parse_any(args.english, args.source_lang)
+    translation = _parse_any(args.russian, args.translation_lang)
+    source_label, translation_label = _pair_labels(
+        source, translation, args.source_lang, args.translation_lang,
+    )
+    report, issues = build_report(
+        source, translation, source_label, translation_label,
+    )
     print(report)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -125,9 +187,12 @@ def run_check(args: argparse.Namespace) -> int:
 
 
 def run_align(args: argparse.Namespace) -> int:
-    en = _parse_any(args.english)
-    ru = _parse_any(args.russian)
-    result = align_chapters(en, ru)
+    source = _parse_any(args.english, args.source_lang)
+    translation = _parse_any(args.russian, args.translation_lang)
+    source_label, translation_label = _pair_labels(
+        source, translation, args.source_lang, args.translation_lang,
+    )
+    result = align_chapters(source, translation)
 
     out = args.output or (
         Path("cache") / f"align_{args.english.stem}--{args.russian.stem}.json"
@@ -136,7 +201,7 @@ def run_align(args: argparse.Namespace) -> int:
     out.write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8",
     )
-    print(format_report(result))
+    print(format_report(result, source_label, translation_label))
     print(f"\nSaved to: {out}")
     return 0
 
@@ -148,6 +213,10 @@ def run_build(args: argparse.Namespace) -> int:
     argv = ["--en", str(args.english), "--ru", str(args.russian)]
     if not args.preview:
         argv.append("--all")
+    if args.source_lang is not None:
+        argv.extend(["--source-lang", args.source_lang])
+    if args.translation_lang is not None:
+        argv.extend(["--translation-lang", args.translation_lang])
     argv.extend(["--output", str(args.output or DEFAULT_BUILD_OUTPUT)])
     return build_epub(argv)
 

@@ -252,7 +252,8 @@ def test_missing_english_or_russian_file_is_reported(tmp_path) -> None:
 def test_preflight_ok_allows_conversion(monkeypatch, capsys) -> None:
     book = _book([])
     monkeypatch.setattr(
-        builder, "build_report", lambda en, ru: ("VERDICT: OK", []),
+        builder, "build_report",
+        lambda en, ru, *labels: ("VERDICT: OK", []),
     )
 
     assert builder._run_preflight(book, book) is True
@@ -277,10 +278,12 @@ def test_preflight_warning_allows_full_cli_generation(
     parsed = {en_path: en_book, ru_path: ru_book}
     report_calls = []
 
-    monkeypatch.setattr(builder, "_parse_book", lambda path: parsed[path])
+    monkeypatch.setattr(
+        builder, "_parse_book", lambda path, lang=None: parsed[path],
+    )
     monkeypatch.setattr(
         builder, "build_report",
-        lambda en, ru: (
+        lambda en, ru, *labels: (
             report_calls.append((en, ru))
             or ("PREFLIGHT WARNING\nVERDICT: PROCEED WITH CAUTION", [
                 Issue(WARNING, "english", "sample-warning", "Review this."),
@@ -312,10 +315,12 @@ def test_preflight_error_stops_before_alignment_or_generation(
     ru_path.write_text("placeholder")
     book = _book([])
 
-    monkeypatch.setattr(builder, "_parse_book", lambda _path: book)
+    monkeypatch.setattr(
+        builder, "_parse_book", lambda _path, lang=None: book,
+    )
     monkeypatch.setattr(
         builder, "build_report",
-        lambda _en, _ru: ("PREFLIGHT ERROR\nVERDICT: STOP", [
+        lambda _en, _ru, *labels: ("PREFLIGHT ERROR\nVERDICT: STOP", [
             Issue(ERROR, "english", "invalid-source", "Cannot align."),
         ]),
     )
@@ -387,7 +392,7 @@ def test_render_en_bold_then_ru_normal() -> None:
         en_sentences=["Hello."], ru_sentences=["Привет."],
     )
     html = _render_paragraph(bp, src, {})
-    assert html.index('class="en') < html.index('class="ru')
+    assert html.index('class="source') < html.index('class="translation')
     assert "<strong>Hello.</strong>" in html
     assert ">Привет.<" in html
 
@@ -399,7 +404,7 @@ def test_render_empty_ru_not_fabricated() -> None:
     )
     html = _render_paragraph(bp, src, {})
     assert "<strong>Solo.</strong>" in html
-    assert 'class="ru"' not in html
+    assert 'class="translation"' not in html
     assert "no translation" not in html.lower()
 
 
@@ -423,7 +428,7 @@ def test_render_heading_and_quote_types() -> None:
         ),
         src, {},
     )
-    assert "<h2" in heading and 'class="ru"' in heading
+    assert "<h2" in heading and 'class="translation"' in heading
 
     quote = _render_paragraph(
         BilingualParagraph(
@@ -473,7 +478,8 @@ def _expected(n: int) -> list[tuple[str, list[BilingualParagraph]]]:
 
 def _bodies(n: int) -> list[str]:
     return [
-        f'<p class="en"><strong>E{k}</strong></p><p class="ru">R{k}</p>'
+        f'<p class="source"><strong>E{k}</strong></p>'
+        f'<p class="translation">R{k}</p>'
         for k in range(n)
     ]
 
@@ -486,7 +492,7 @@ def test_verify_passes_on_complete_text(tmp_path) -> None:
 
 def test_verify_detects_missing_ru(tmp_path) -> None:
     path = tmp_path / "bad.epub"
-    _mini_epub(path, ['<p class="en"><strong>E0</strong></p>'])
+    _mini_epub(path, ['<p class="source"><strong>E0</strong></p>'])
     assert not all(ok for _, ok in _verify(path, _expected(1)))
 
 

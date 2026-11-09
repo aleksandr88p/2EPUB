@@ -270,17 +270,30 @@ def _regional_shifts(
     return shifts, boundaries
 
 
-def compare_books(en: Book, ru: Book) -> list[Issue]:
-    """Cross-book structural comparison (EN vs RU)."""
+def compare_books(
+    en: Book,
+    ru: Book,
+    source_label: str = "English",
+    translation_label: str = "Russian",
+) -> list[Issue]:
+    """Cross-book structural comparison."""
     issues: list[Issue] = []
+    source_tag = "EN" if source_label == "English" else source_label
+    translation_tag = (
+        "RU" if translation_label == "Russian" else translation_label
+    )
     en_ch, ru_ch = _titled_main(en), _titled_main(ru)
 
     issues.append(Issue(
         INFO, "both", "chapter-inventory",
-        f"Titled main-body chapters: EN={len(en_ch)}, RU={len(ru_ch)}. "
-        f"Auxiliary sections (notes etc.): EN={len(_aux_chapters(en))}, "
-        f"RU={len(_aux_chapters(ru))}. Untitled front-matter sections: "
-        f"EN={len(_untitled_main(en))}, RU={len(_untitled_main(ru))}.",
+        f"Titled main-body chapters: {source_tag}={len(en_ch)}, "
+        f"{translation_tag}={len(ru_ch)}. "
+        f"Auxiliary sections (notes etc.): "
+        f"{source_tag}={len(_aux_chapters(en))}, "
+        f"{translation_tag}={len(_aux_chapters(ru))}. "
+        f"Untitled front-matter sections: "
+        f"{source_tag}={len(_untitled_main(en))}, "
+        f"{translation_tag}={len(_untitled_main(ru))}.",
     ))
 
     if not en_ch or not ru_ch:
@@ -294,7 +307,8 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
     if len(en_ch) != len(ru_ch):
         issues.append(Issue(
             WARNING, "both", "chapter-count",
-            f"Chapter count differs: EN={len(en_ch)}, RU={len(ru_ch)}. "
+            f"Chapter count differs: {source_tag}={len(en_ch)}, "
+            f"{translation_tag}={len(ru_ch)}. "
             "Check for extra front/back matter or missing chapters.",
         ))
 
@@ -303,8 +317,8 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
     if en_levels != ru_levels:
         issues.append(Issue(
             INFO, "both", "hierarchy",
-            f"Chapter hierarchy differs: EN {dict(en_levels)} vs "
-            f"RU {dict(ru_levels)} (levels → counts). Common when one "
+            f"Chapter hierarchy differs: {source_tag} {dict(en_levels)} vs "
+            f"{translation_tag} {dict(ru_levels)} (levels → counts). Common when one "
             "edition groups chapters under parts and the other does not.",
         ))
 
@@ -326,7 +340,7 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
             "positional pairing after that point is unreliable. "
             "Heuristic check; verify manually.",
             [
-                f"offset change near RU chapter {ru_ch[b].id} "
+                f"offset change near {translation_tag} chapter {ru_ch[b].id} "
                 f"{ru_ch[b].title!r} (index {b})"
                 for b in boundaries
             ],
@@ -337,13 +351,17 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
             f"{side} unpaired: " + ", ".join(
                 f"{c.id} {c.title!r}" for c in chs
             )
-            for side, chs in (("EN", unpaired_en), ("RU", unpaired_ru))
+            for side, chs in (
+                (source_tag, unpaired_en),
+                (translation_tag, unpaired_ru),
+            )
             if chs
         ]
         issues.append(Issue(
             WARNING, "both", "unpaired-chapters",
             f"Best chapter alignment uses offset {offset:+d}; "
-            f"{len(unpaired_en)} EN and {len(unpaired_ru)} RU chapters "
+            f"{len(unpaired_en)} {source_tag} and "
+            f"{len(unpaired_ru)} {translation_tag} chapters "
             "have no positional counterpart — likely extra front/back "
             "matter (verify).",
             details,
@@ -365,7 +383,8 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
             "duplicated text. Languages differ in verbosity, so "
             "moderate differences are normal (false positives possible).",
             [
-                f"#{i} EN {a.title!r} ({we} w) ↔ RU {b.title!r} "
+                f"#{i} {source_tag} {a.title!r} ({we} w) ↔ "
+                f"{translation_tag} {b.title!r} "
                 f"({wr} w), ratio {ratio:.2f}"
                 for i, a, b, we, wr, ratio in flagged[:8]
             ],
@@ -374,7 +393,8 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
         issues.append(Issue(
             INFO, "both", "volume-ok",
             f"All {len(pairs)} paired chapters have comparable volume "
-            f"(RU/EN ratio within {_VOLUME_RATIO_RANGE[0]}–"
+            f"({translation_tag}/{source_tag} ratio within "
+            f"{_VOLUME_RATIO_RANGE[0]}–"
             f"{_VOLUME_RATIO_RANGE[1]}).",
         ))
 
@@ -383,7 +403,8 @@ def compare_books(en: Book, ru: Book) -> list[Issue]:
     overall = ru_words / en_words if en_words else 0
     issues.append(Issue(
         INFO, "both", "total-volume",
-        f"Total volume: EN={en_words} words, RU={ru_words} words "
+        f"Total volume: {source_tag}={en_words} words, "
+        f"{translation_tag}={ru_words} words "
         f"(ratio {overall:.2f}). Differences in word/paragraph counts "
         "between languages are expected and are not an error.",
     ))
@@ -397,12 +418,17 @@ def _source_summary(book: Book) -> str:
             f"{s['words']} words)")
 
 
-def build_report(en: Book, ru: Book) -> tuple[str, list[Issue]]:
+def build_report(
+    en: Book,
+    ru: Book,
+    source_label: str = "English",
+    translation_label: str = "Russian",
+) -> tuple[str, list[Issue]]:
     """Full text report. Returns (report_text, all_issues)."""
     issues = (
         check_book(en, "english")
         + check_book(ru, "russian")
-        + compare_books(en, ru)
+        + compare_books(en, ru, source_label, translation_label)
     )
 
     def section(title: str, side: str) -> list[str]:
@@ -420,27 +446,36 @@ def build_report(en: Book, ru: Book) -> tuple[str, list[Issue]]:
         "=" * 66,
         "PREFLIGHT REPORT",
         "=" * 66,
-        f"English: {_source_summary(en)}",
-        f"Russian: {_source_summary(ru)}",
+        f"{source_label}: {_source_summary(en)}",
+        f"{translation_label}: {_source_summary(ru)}",
         "",
-        *section("ENGLISH SOURCE", "english"),
+        *section(f"{source_label.upper()} SOURCE", "english"),
         "",
-        *section("RUSSIAN SOURCE", "russian"),
+        *section(f"{translation_label.upper()} SOURCE", "russian"),
         "",
         *section("CROSS-BOOK COMPARISON", "both"),
         "",
         "=" * 66,
-        f"VERDICT: {verdict(issues)}",
+        f"VERDICT: {verdict(issues, source_label, translation_label)}",
         "=" * 66,
     ]
     return "\n".join(lines), issues
 
 
-def verdict(issues: list[Issue]) -> str:
+def verdict(
+    issues: list[Issue],
+    source_label: str = "English",
+    translation_label: str = "Russian",
+) -> str:
     errors = [i for i in issues if i.level == ERROR]
     warnings = [i for i in issues if i.level == WARNING]
     if errors:
-        sides = sorted({i.side for i in errors})
+        labels = {
+            "english": source_label,
+            "russian": translation_label,
+            "both": f"{source_label}/{translation_label}",
+        }
+        sides = sorted({labels.get(i.side, i.side) for i in errors})
         return (
             "STOP — critical structural problems in "
             f"{', '.join(sides)} source(s): "

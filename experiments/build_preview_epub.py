@@ -1,11 +1,11 @@
-"""Build a bilingual EPUB from English and Russian EPUB or FB2 books.
+"""Build a bilingual EPUB from a source book and its translation.
 
 Two modes:
 
   * preview (default): the first two aligned chapter pairs ->
     output/2epub_preview.epub
-  * full (--all): every aligned pair plus every EN chapter that has
-    no RU counterpart (front matter, unmatched plot chapters,
+  * full (--all): every aligned pair plus every source chapter that has
+    no translation counterpart (front matter, unmatched plot chapters,
     auxiliary bodies), in the EN book's original order ->
     output/2epub_full.epub
 
@@ -15,15 +15,17 @@ Both run the existing pipeline end to end:
     alignment with the joined-text group scorer -> paragraph
     reconstruction -> EPUB assembly.
 
-Layout contract: the EN book defines structure and chapter order.
-Every EN paragraph is rendered bold, its aligned RU sentences follow
-in a normal paragraph. EN cover and body images are carried over;
-RU images are not included yet. Paragraphs without a translation are
-left bare — no placeholder text is invented. RU chapters without an
-EN counterpart are not added to the EPUB (the EN book defines its
+Layout contract: the source book defines structure and chapter order.
+Every source paragraph is rendered bold, its aligned translation
+sentences follow in a normal paragraph. Source cover and images are
+carried over; translation images are not included yet. Paragraphs
+without a translation are left bare — no placeholder text is invented.
+Translation chapters without a source counterpart are not added to the
+EPUB (the source book defines its
 structure); they are listed in the run report instead.
 
-Run:  venv/bin/python experiments/build_preview_epub.py [--all]
+Run:  venv/bin/python experiments/build_preview_epub.py \
+          --en books/source.fb2 --ru books/translation.epub [--all]
       venv/bin/python experiments/build_preview_epub.py \
           --en books/english.epub --ru books/russian.fb2 \
           --output output/my_book.epub --all
@@ -52,6 +54,12 @@ from bookparse.checks import ERROR, WARNING, build_report  # noqa: E402
 from bookparse.embedding_cache import embed_with_cache  # noqa: E402
 from bookparse.epub_parser import parse_epub  # noqa: E402
 from bookparse.fb2_parser import parse_fb2  # noqa: E402
+from bookparse.languages import (  # noqa: E402
+    UnsupportedLanguageError,
+    language_name,
+    normalize_language,
+    resolve_language_pair,
+)
 from bookparse.models import Book, Chapter, Paragraph  # noqa: E402
 from bookparse.paragraph_reconstruction import (  # noqa: E402
     BilingualParagraph,
@@ -83,22 +91,30 @@ def _rel(path: Path) -> Path | str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="build_preview_epub",
-        description="Build a bilingual EPUB from English and Russian "
-                    "EPUB or FB2 books.",
+        description="Build a bilingual EPUB from an original and "
+                    "translation (EPUB or FB2).",
     )
     parser.add_argument(
         "--all", action="store_true", dest="all_chapters",
-        help="process every aligned chapter pair plus all EN chapters "
-             "without an RU counterpart (default: first %d pairs only)"
+        help="process every aligned pair plus source-only chapters "
+             "(default: first %d pairs only)"
              % N_CHAPTERS,
     )
     parser.add_argument(
         "--en", type=Path, required=True, metavar="PATH",
-        help="path to the English original (.fb2 or .epub)",
+        help="legacy --en option: path to the source/original book",
     )
     parser.add_argument(
         "--ru", type=Path, required=True, metavar="PATH",
-        help="path to the Russian translation (.fb2 or .epub)",
+        help="legacy --ru option: path to the translation book",
+    )
+    parser.add_argument(
+        "--source-lang", metavar="CODE",
+        help="override the original language (en, ru, es; default: metadata)",
+    )
+    parser.add_argument(
+        "--translation-lang", metavar="CODE",
+        help="override the translation language (en, ru, es; default: metadata)",
     )
     parser.add_argument(
         "--output", type=Path, default=None, metavar="PATH",
@@ -123,9 +139,16 @@ def _validate_book_path(path: Path, label: str) -> Path:
     return path
 
 
-def _run_preflight(en_book: Book, ru_book: Book) -> bool:
+def _run_preflight(
+    en_book: Book,
+    ru_book: Book,
+    source_label: str = "English",
+    translation_label: str = "Russian",
+) -> bool:
     """Print source checks and return False when alignment must stop."""
-    report, issues = build_report(en_book, ru_book)
+    report, issues = build_report(
+        en_book, ru_book, source_label, translation_label,
+    )
     print(report)
 
     has_error = any(issue.level == ERROR for issue in issues)
@@ -142,22 +165,23 @@ def _run_preflight(en_book: Book, ru_book: Book) -> bool:
     return True
 
 
-def _parse_book(path: Path) -> Book:
+def _parse_book(path: Path, lang: str | None = None) -> Book:
     """Select the existing parser from the input file extension."""
+    lang = normalize_language(lang)
     if path.suffix.lower() == ".fb2":
-        return parse_fb2(path)
+        return parse_fb2(path, lang=lang)
     if path.suffix.lower() == ".epub":
-        return parse_epub(path)
+        return parse_epub(path, lang=lang)
     raise ValueError(f"unsupported book format: {path.suffix}")
 
 
 _CSS = """\
-p.en { font-weight: bold; margin: 0.4em 0 0 0; }
-h2.en { margin: 1em 0 0.3em 0; }
-p.ru { margin: 0.15em 0 0.9em 0; }
+p.source { font-weight: bold; margin: 0.4em 0 0 0; }
+h2.source { margin: 1em 0 0.3em 0; }
+p.translation { margin: 0.15em 0 0.9em 0; }
 blockquote { margin: 0.4em 1.2em; }
 p.empty-line { margin: 0.6em 0; }
-div.en-img { text-align: center; margin: 0.6em 0; }
+div.source-img { text-align: center; margin: 0.6em 0; }
 """
 
 _MIME_EXT = {
@@ -286,13 +310,17 @@ def _render_paragraph(
     bp: BilingualParagraph,
     src: Paragraph,
     img_files: dict[str, str],
+    source_lang: str = "en",
+    translation_lang: str = "ru",
 ) -> str:
-    """One EN block + its RU translation block.
+    """One source block plus its translation block.
 
     `img_files` maps source image references to in-EPUB paths.
     """
     en_text = " ".join(bp.en_sentences)
     ru_text = " ".join(bp.ru_sentences)
+    source_lang_attr = escape(source_lang, quote=True)
+    translation_lang_attr = escape(translation_lang, quote=True)
 
     image_tags = []
     for img in src.images:
@@ -302,28 +330,41 @@ def _render_paragraph(
             alt = escape(img.get("alt") or "", quote=True)
             image_tags.append(f'<img src="{file_name}" alt="{alt}" />')
     image_block = (
-        f'<div class="en-img">{"".join(image_tags)}</div>'
+        f'<div class="source-img">{"".join(image_tags)}</div>'
         if image_tags else ""
     )
 
     if bp.type == "empty-line" and not en_text:
-        en_block = '<p class="en empty-line">&#160;</p>'
+        en_block = (
+            f'<p class="source empty-line" lang="{source_lang_attr}">'
+            "&#160;</p>"
+        )
     elif bp.type == "image" or (src.images and not en_text):
         en_block = image_block
     elif bp.type == "heading":
-        en_block = f'<h2 class="en">{escape(en_text)}</h2>'
+        en_block = (
+            f'<h2 class="source" lang="{source_lang_attr}">'
+            f"{escape(en_text)}</h2>"
+        )
     else:
         en_block = (
-            f'<p class="en {escape(bp.type, quote=True)}">'
+            f'<p class="source {escape(bp.type, quote=True)}" '
+            f'lang="{source_lang_attr}">'
             f"<strong>{escape(en_text)}</strong></p>"
         )
         en_block += image_block
 
-    ru_block = f'<p class="ru">{escape(ru_text)}</p>' if ru_text else ""
+    translation_block = (
+        f'<p class="translation" lang="{translation_lang_attr}">'
+        f"{escape(ru_text)}</p>"
+        if ru_text else ""
+    )
 
     if bp.type in _QUOTE_TYPES:
-        return f"<blockquote>{en_block}{ru_block}</blockquote>\n"
-    return en_block + ru_block + "\n"
+        return (
+            f"<blockquote>{en_block}{translation_block}</blockquote>\n"
+        )
+    return en_block + translation_block + "\n"
 
 
 def _chapter_xhtml(body: str) -> str:
@@ -335,12 +376,12 @@ def _chapter_xhtml(body: str) -> str:
 def _chapter_plan(
     en_book, pairs: list[dict],
 ) -> list[tuple[Chapter, dict | None]]:
-    """Ordered rendering plan over ALL EN chapters.
+    """Ordered rendering plan over all source chapters.
 
-    Returns (en_chapter, pair_or_None) in the EN book's original
+    Returns (source_chapter, pair_or_None) in the source book's original
     order. Chapters absent from `pairs` (skipped plot chapters,
-    untitled front matter, auxiliary bodies) are emitted EN-only —
-    the EN book defines the output's structure, nothing is dropped.
+    untitled front matter, auxiliary bodies) are emitted source-only —
+    the source book defines the output's structure, nothing is dropped.
     """
     pair_by_en = {p["en_order"]: p for p in pairs}
     return [(ch, pair_by_en.get(ch.order)) for ch in en_book.chapters]
@@ -355,8 +396,7 @@ def _unpaired_reason(chapter: Chapter) -> str:
 
 
 def _en_only_paragraphs(chapter: Chapter) -> list[BilingualParagraph]:
-    """EN chapter without an RU counterpart: paragraphs keep their
-    text and order, no translation is attached."""
+    """Source chapter without a translation: keep its paragraphs and order."""
     return [
         BilingualParagraph(
             index=i,
@@ -422,6 +462,8 @@ def _align_chapter_pair(
 def _verify(
     path: Path,
     expected: list[tuple[str, list[BilingualParagraph]]],
+    source_label: str = "EN",
+    translation_label: str = "RU",
 ) -> list[str]:
     """Re-open the EPUB and check structure + text integrity."""
     checks: list[str] = []
@@ -468,21 +510,21 @@ def _verify(
         ))
 
         en_got = [
-            t for el in soup.select(".en")
+            t for el in soup.select(".source")
             if (t := " ".join(el.get_text().split()))
         ]
         ru_got = [
             " ".join(el.get_text().split())
-            for el in soup.select(".ru")
+            for el in soup.select(".translation")
         ]
         en_exp = [" ".join(p.en_sentences) for p in bps if p.en_sentences]
         ru_exp = [" ".join(p.ru_sentences) for p in bps if p.ru_sentences]
         checks.append((
-            f"{name}: EN text complete, ordered, unduplicated",
+            f"{name}: {source_label} text complete, ordered, unduplicated",
             en_got == en_exp,
         ))
         checks.append((
-            f"{name}: RU text complete, ordered, unduplicated",
+            f"{name}: {translation_label} text complete, ordered, unduplicated",
             ru_got == ru_exp,
         ))
 
@@ -500,16 +542,32 @@ def _verify(
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    en_path = _validate_book_path(args.en, "English")
-    ru_path = _validate_book_path(args.ru, "Russian")
+    source_path = _validate_book_path(args.en, "source")
+    translation_path = _validate_book_path(args.ru, "translation")
     out_path = args.output or _output_path(args.all_chapters)
 
-    en_book = _parse_book(en_path)
-    ru_book = _parse_book(ru_path)
-    if not _run_preflight(en_book, ru_book):
+    try:
+        source_override = normalize_language(args.source_lang)
+        translation_override = normalize_language(args.translation_lang)
+        source_book = _parse_book(source_path, source_override)
+        translation_book = _parse_book(
+            translation_path, translation_override,
+        )
+        source_lang, translation_lang = resolve_language_pair(
+            source_book, translation_book,
+            source_override, translation_override,
+        )
+    except UnsupportedLanguageError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+    source_label = language_name(source_lang)
+    translation_label = language_name(translation_lang)
+    if not _run_preflight(
+        source_book, translation_book, source_label, translation_label,
+    ):
         return 2
 
-    alignment = align_chapters(en_book, ru_book)
+    alignment = align_chapters(source_book, translation_book)
     all_pairs = alignment["pairs"]
     pairs = all_pairs if args.all_chapters else all_pairs[:N_CHAPTERS]
     if not args.all_chapters and len(pairs) < N_CHAPTERS:
@@ -518,9 +576,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.all_chapters:
         # The EN book defines structure: every EN chapter appears, in
         # order; paired ones get a translation, the rest stay EN-only.
-        plan = _chapter_plan(en_book, pairs)
+        plan = _chapter_plan(source_book, pairs)
     else:
-        plan = [(en_book.chapters[p["en_order"]], p) for p in pairs]
+        plan = [(source_book.chapters[p["en_order"]], p) for p in pairs]
 
     encode = None
     if any(pair is not None for _, pair in plan):
@@ -540,27 +598,32 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- align / prepare each chapter ---------------------------------
     aligned: list[tuple[Chapter, Chapter | None, list[BilingualParagraph]]] = []
-    for en_ch, pair in plan:
+    for source_ch, pair in plan:
         if pair is None:
-            print(f"EN-only: {en_ch.id} {en_ch.title!r} "
-                  f"[{_unpaired_reason(en_ch)}]")
-            aligned.append((en_ch, None, _en_only_paragraphs(en_ch)))
+            print(f"{source_label}-only: {source_ch.id} "
+                  f"{source_ch.title!r} [{_unpaired_reason(source_ch)}]")
+            aligned.append((
+                source_ch, None, _en_only_paragraphs(source_ch),
+            ))
             continue
-        ru_ch = ru_book.chapters[pair["ru_order"]]
-        print(f"Pair: {en_ch.id} {en_ch.title!r} <-> "
-              f"{ru_ch.id} {ru_ch.title!r} "
-              f"({len(en_ch.paragraphs)} EN paras, "
-              f"{len(ru_ch.paragraphs)} RU paras)")
-        bps, op_stats = _align_chapter_pair(en_ch, ru_ch, encode)
+        translation_ch = translation_book.chapters[pair["ru_order"]]
+        print(f"Pair: {source_label} {source_ch.id} "
+              f"{source_ch.title!r} <-> {translation_label} "
+              f"{translation_ch.id} {translation_ch.title!r} "
+              f"({len(source_ch.paragraphs)} source paras, "
+              f"{len(translation_ch.paragraphs)} translation paras)")
+        bps, op_stats = _align_chapter_pair(
+            source_ch, translation_ch, encode,
+        )
         print(f"  ops: {op_stats}")
-        aligned.append((en_ch, ru_ch, bps))
+        aligned.append((source_ch, translation_ch, bps))
 
-    # --- collect EN images actually referenced ------------------------
-    images, cover_key = _source_assets(en_path)
+    # --- collect source images actually referenced --------------------
+    images, cover_key = _source_assets(source_path)
     image_keys: set[str] = set()
-    for en_ch, _, bps in aligned:
+    for source_ch, _, bps in aligned:
         for bp in bps:
-            for img in en_ch.paragraphs[bp.index].images:
+            for img in source_ch.paragraphs[bp.index].images:
                 image_keys.add(_image_key(img.get("src")))
     img_files = _image_file_names(image_keys, images)
 
@@ -569,11 +632,11 @@ def main(argv: list[str] | None = None) -> int:
     out_book.set_identifier(str(uuid.uuid4()))
     mode = "full" if args.all_chapters else "preview"
     out_book.set_title(
-        f"{en_book.metadata.get('title', '')} — bilingual {mode}"
+        f"{source_book.metadata.get('title', '')} — bilingual {mode}"
     )
-    out_book.set_language("en")
-    out_book.add_metadata("DC", "language", "ru")
-    author = en_book.metadata.get("author")
+    out_book.set_language(source_lang)
+    out_book.add_metadata("DC", "language", translation_lang)
+    author = source_book.metadata.get("author")
     if author:
         out_book.add_author(author)
 
@@ -585,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         cover_page = out_book.get_item_with_id("cover")
         print(f"Cover: {name} ({media}, {len(data)} bytes)")
     else:
-        print("Cover: none in EN source")
+        print(f"Cover: none in {source_label} source")
 
     style = epub.EpubItem(
         uid="style", file_name="style.css",
@@ -603,19 +666,22 @@ def main(argv: list[str] | None = None) -> int:
 
     chapters: list[epub.EpubHtml] = []
     expected: list[tuple[str, list[BilingualParagraph]]] = []
-    for k, (en_ch, ru_ch, bps) in enumerate(aligned):
-        en_t = en_ch.title or "Untitled"
+    for k, (source_ch, translation_ch, bps) in enumerate(aligned):
+        source_title = source_ch.title or "Untitled"
         title = (
-            f"{en_t} / {ru_ch.title or 'Untitled'}"
-            if ru_ch is not None else en_t
+            f"{source_title} / {translation_ch.title or 'Untitled'}"
+            if translation_ch is not None else source_title
         )
         body = "".join(
-            _render_paragraph(bp, en_ch.paragraphs[bp.index], img_files)
+            _render_paragraph(
+                bp, source_ch.paragraphs[bp.index], img_files,
+                source_lang, translation_lang,
+            )
             for bp in bps
         )
         item = epub.EpubHtml(
             uid=f"chap_{k + 1}", file_name=f"chap_{k + 1}.xhtml",
-            title=title, lang="en",
+            title=title, lang=source_lang,
         )
         item.add_item(style)
         item.content = _chapter_xhtml(body).encode("utf-8")
@@ -632,7 +698,9 @@ def main(argv: list[str] | None = None) -> int:
     epub.write_epub(str(out_path), out_book)
 
     # --- verification ----------------------------------------------------
-    checks = _verify(out_path, expected)
+    checks = _verify(
+        out_path, expected, source_label, translation_label,
+    )
     ok = True
     for label, passed in checks:
         ok &= passed
@@ -648,45 +716,55 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- summary ----------------------------------------------------------
     print("\nPer-chapter summary:")
-    totals = {"paired": 0, "en_only": 0, "en_s": 0, "ru_s": 0, "bare": 0}
-    for (en_ch, ru_ch, bps), (title, _) in zip(aligned, expected):
-        en_s = sum(len(p.en_sentences) for p in bps)
-        ru_s = sum(len(p.ru_sentences) for p in bps)
+    totals = {
+        "paired": 0, "source_only": 0,
+        "source_s": 0, "translation_s": 0, "bare": 0,
+    }
+    for (source_ch, translation_ch, bps), (title, _) in zip(aligned, expected):
+        source_s = sum(len(p.en_sentences) for p in bps)
+        translation_s = sum(len(p.ru_sentences) for p in bps)
         bare = sum(1 for p in bps if p.en_sentences and not p.ru_sentences)
-        if ru_ch is None:
-            mark = f"  [EN-only: {_unpaired_reason(en_ch)}]"
-            totals["en_only"] += 1
+        if translation_ch is None:
+            mark = f"  [{source_label}-only: {_unpaired_reason(source_ch)}]"
+            totals["source_only"] += 1
         else:
             mark = ""
             totals["paired"] += 1
-        totals["en_s"] += en_s
-        totals["ru_s"] += ru_s
+        totals["source_s"] += source_s
+        totals["translation_s"] += translation_s
         totals["bare"] += bare
         print(f"  {title!r}: {len(bps)} paragraphs, "
-              f"{en_s} EN / {ru_s} RU sentences, "
-              f"{bare} EN paragraphs without translation{mark}")
+              f"{source_s} {source_label} / "
+              f"{translation_s} {translation_label} sentences, "
+              f"{bare} source paragraphs without translation{mark}")
     print(
         f"TOTAL: {len(aligned)} chapters "
-        f"({totals['paired']} paired, {totals['en_only']} EN-only), "
-        f"{totals['en_s']} EN / {totals['ru_s']} RU sentences, "
-        f"{totals['bare']} EN paragraphs without translation"
+        f"({totals['paired']} paired, "
+        f"{totals['source_only']} {source_label}-only), "
+        f"{totals['source_s']} {source_label} / "
+        f"{totals['translation_s']} {translation_label} sentences, "
+        f"{totals['bare']} source paragraphs without translation"
     )
 
     doubtful = [p for p in pairs if p["quality"] == "doubtful"]
     print(f"\nDoubtful chapter pairs: {len(doubtful)}")
     for p in doubtful:
-        print(f"  {p['en_chapter_id']} {p['en_title']!r} <-> "
+        print(f"  {source_label} {p['en_chapter_id']} "
+              f"{p['en_title']!r} <-> {translation_label} "
               f"{p['ru_chapter_id']} {p['ru_title']!r} "
               f"[{', '.join(p['reasons'])}]")
 
     if args.all_chapters:
-        # RU chapters without an EN counterpart are not in the EPUB —
+        # Translation chapters without a source counterpart are not in the EPUB —
         # surfaced here instead of being dropped silently.
         missing_ru = (
             alignment["unmatched"]["russian"]
             + alignment["service"]["russian"]
         )
-        print(f"\nRU chapters not in the EPUB: {len(missing_ru)}")
+        print(
+            f"\n{translation_label} chapters not in the EPUB: "
+            f"{len(missing_ru)}"
+        )
         for c in missing_ru:
             reason = c.get("service_reason") or "unmatched"
             print(f"  {c['chapter_id']} {c['title']!r} "

@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import re
 
+from .languages import normalize_language
+
 _WORD_RE = re.compile(r"[\w]+(?:[’'\-][\w]+)*", re.UNICODE)
 
 _BOUNDARY_RE = re.compile(r"[.!?…]+[”’\"'»)\]]*(?=\s|$)")
 _CLOSERS = "”’\"'»)]"
 _TOKEN_RE = re.compile(r"[\w.]+['’\w]*$")
-_INITIALS_RE = re.compile(r"(?:[A-ZА-ЯЁ]\.)+$")
+_INITIALS_RE = re.compile(r"(?:[A-ZÁÉÍÓÚÜÑА-ЯЁ]\.)+$")
 
 EN_ABBREV = {
     "mr", "mrs", "ms", "dr", "st", "mt", "jr", "sr", "prof", "vs", "etc",
@@ -29,6 +31,12 @@ RU_ABBREV = {
     "т.д", "т.п", "т.е", "т.к", "т.н", "т.о", "т.г", "и.о", "и.т.д",
     "г", "гг", "с", "стр", "гл", "рис", "ил", "св", "им", "др", "ч",
     "см", "н.э", "с.ш", "в.д", "ю.ш", "руб", "коп", "долл", "тыс", "млн",
+}
+
+ES_ABBREV = {
+    "sr", "sra", "srta", "dr", "dra", "d", "dña", "don", "doña",
+    "pág", "págs", "núm", "n.º", "art", "cap", "av", "etc",
+    "a.c", "d.c", "ee", "uu",
 }
 
 
@@ -60,11 +68,14 @@ def split_sentences(text: str, lang: str | None = None) -> list[str]:
     text = " ".join(text.split())
     if not text:
         return []
-    abbrevs = EN_ABBREV | RU_ABBREV
+    lang = normalize_language(lang)
+    abbrevs = EN_ABBREV | RU_ABBREV | ES_ABBREV
     if lang == "en":
         abbrevs = EN_ABBREV
     elif lang == "ru":
         abbrevs = RU_ABBREV
+    elif lang == "es":
+        abbrevs = ES_ABBREV
 
     sentences: list[str] = []
     start = 0
