@@ -2,241 +2,100 @@
 
 [English](README.md) | [Русский](README.ru.md)
 
-**2EPUB creates one bilingual EPUB from a source book and its translation.** The first book determines chapter order and paragraph structure; its text is shown in bold, with the aligned translation directly below it.
+2EPUB is an experimental Python CLI that creates a bilingual EPUB from an
+original book and its translation. The original defines chapter order and
+paragraph structure; its text is bold, with the corresponding translation
+immediately below.
 
-The MVP supports English (`en`), Russian (`ru`), and Spanish (`es`) in all six directions: EN→RU, RU→EN, EN→ES, ES→EN, RU→ES, and ES→RU.
+## Features
 
-**Status:** experimental MVP v0.1. The converter works on real books, but alignment is not guaranteed to be semantically perfect.
+- EPUB and FB2 inputs in any combination: EPUB+EPUB, EPUB+FB2, FB2+EPUB,
+  or FB2+FB2.
+- English, Russian, and Spanish in all six directions: EN→RU, RU→EN,
+  EN→ES, ES→EN, RU→ES, and ES→RU.
+- Language detection from book metadata, with `--source-lang` and
+  `--translation-lang` overrides.
+- Source chapter structure, supported block formatting, cover and
+  referenced images are carried over when available. The output includes
+  EPUB navigation and a table of contents.
+- Optional `--short-paragraphs` mode targets about 35–40 source words per
+  block. It keeps the complete aligned translation without a word limit
+  and splits only at sentence and alignment-operation boundaries; 1:2 and
+  2:1 groups stay intact.
 
-## Quick start (macOS)
+## Requirements and installation
 
-The project is developed and tested with Python 3.14. Git and an internet connection for the first model download are required.
-
-Clone the repository and enter the project directory:
+Python 3.14 is the tested version. The commands below use macOS/Linux.
+An internet connection is needed the first time the local Qwen embedding
+model is downloaded.
 
 ```bash
 git clone https://github.com/aleksandr88p/2EPUB.git
 cd 2EPUB
-```
-
-Create and activate a virtual environment, then install dependencies:
-
-```bash
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The Qwen3-Embedding-0.6B model downloads automatically the first time you run `build`. It is stored in `cache/models/`; sentence embeddings are cached in `cache/embeddings/`. The first full conversion can take a while. Repeating a conversion reuses cached embeddings.
+The model is stored in `cache/models/` and sentence embeddings in
+`cache/embeddings/`. Later builds reuse the embedding cache.
 
-## Prepare your books
+## Quick start
 
-Put your books in `books/` if convenient. The directory is kept in Git by `.gitkeep`, while personal book files are ignored and are not committed. You can also pass files from another location.
-
-Both inputs can independently be FB2 or EPUB. Supported language directions:
-
-| Source/original | Translation |
-|---|---|---|
-| English | Russian |
-| Russian | English |
-| English | Spanish |
-| Spanish | English |
-| Russian | Spanish |
-| Spanish | Russian |
-
-The first positional input is always the source/original; the second is the translation. By default, 2EPUB reads each language from EPUB/FB2 metadata. Use `--source-lang` and `--translation-lang` if metadata is missing or incorrect. Codes and aliases such as `en`/`eng`, `ru`/`rus`, `es`/`spa`, and regional codes such as `es-ES` are accepted. If metadata is absent, the legacy fallback is EN→RU. Other unsupported codes are rejected with an error. Use quotation marks around paths containing spaces or non-Latin characters.
-
-Examples of all supported language directions (each file may be FB2 or EPUB):
+Put your `.epub` or `.fb2` files in `books/` (or use paths elsewhere).
+The first path is always the original; the second is its translation.
 
 ```bash
-python -m bookparse build books/english.fb2 books/russian.epub
-python -m bookparse build books/russian.fb2 books/english.epub
-python -m bookparse build books/english.fb2 books/spanish.epub
-python -m bookparse build books/spanish.epub books/english.fb2
-python -m bookparse build books/russian.epub books/spanish.fb2
-python -m bookparse build books/spanish.fb2 books/russian.epub
+python -m bookparse check "books/original.epub" "books/translation.fb2"
+python -m bookparse build "books/original.epub" "books/translation.fb2" \
+  --short-paragraphs --output "output/bilingual.epub"
 ```
 
-## Typical workflow
+The build command creates a full book by default. Its default output is
+`output/2epub.epub`; `--preview` limits the result to the first two aligned
+chapter pairs. The output directory is created automatically.
 
-First check the two source books:
-
-```bash
-python -m bookparse check \
-  "books/Lost_Gods_-_Brom.epub" \
-  "books/потерянные боги Бром.fb2"
-```
-
-Then create the full bilingual book:
+Languages are read from EPUB/FB2 metadata. If metadata is missing or wrong,
+set both overrides, for example:
 
 ```bash
-python -m bookparse build \
-  "books/Lost_Gods_-_Brom.epub" \
-  "books/потерянные боги Бром.fb2"
-```
-
-The default output is `output/2epub.epub`. The output directory is created automatically if necessary.
-
-To create a quick preview containing the first two aligned chapter pairs:
-
-```bash
-python -m bookparse build \
-  "books/Lost_Gods_-_Brom.epub" \
-  "books/потерянные боги Бром.fb2" \
-  --preview
-```
-
-To choose a different output file:
-
-```bash
-python -m bookparse build \
-  "books/Lost_Gods_-_Brom.epub" \
-  "books/потерянные боги Бром.fb2" \
-  --output "output/Lost_Gods_bilingual.epub"
-```
-
-Open the resulting `.epub` in a regular ebook reader or transfer it to an e-reader. The `output/` directory is ignored by Git.
-
-## CLI reference
-
-For ordinary use, the `check` and `build` commands are enough. All paths below may point to either `.fb2` or `.epub`, except `parse` which accepts one book at a time.
-
-### `check SOURCE TRANSLATION`
-
-Run source preflight checks and print a report before conversion. An optional `-o/--output PATH` saves the report to a text file.
-
-```bash
-python -m bookparse check "books/english.epub" "books/russian.fb2"
-python -m bookparse check "books/english.epub" "books/russian.fb2" \
-  --output "output/preflight.txt"
-python -m bookparse check "books/spanish.epub" "books/russian.fb2" \
+python -m bookparse build "books/original.epub" "books/перевод.fb2" \
   --source-lang es --translation-lang ru
 ```
 
-`build` runs the same preflight automatically, so a separate check is optional but useful when you want to inspect source warnings first.
+Supported codes include `en`/`eng`, `ru`/`rus`, and `es`/`spa`; regional
+tags such as `es-ES` are accepted. If language metadata is absent, the
+legacy fallback is EN→RU.
 
-### `build SOURCE TRANSLATION`
+## CLI commands
 
-Build the full bilingual EPUB by default. Add `--preview` for only the first two aligned chapter pairs. Use `-o/--output PATH` to choose a destination; otherwise the file is `output/2epub.epub`.
+All book inputs can independently be EPUB or FB2.
 
-```bash
-python -m bookparse build "books/english.fb2" "books/russian.epub"
-python -m bookparse build "books/spanish.epub" "books/english.fb2"
-python -m bookparse build "books/english.fb2" "books/russian.epub" --preview
-python -m bookparse build "books/english.fb2" "books/russian.epub" \
-  --output "output/My_Bilingual_Book.epub"
-python -m bookparse build "books/spanish.fb2" "books/russian.epub" \
-  --source-lang es --translation-lang ru
-```
-
-The builder accepts either format for each input, including mixed pairs. The source/original defines the structure. Its cover and referenced images are carried into the result when present. Language overrides are optional; correctly tagged books only need the two paths.
-
-### `align-chapters SOURCE TRANSLATION`
-
-Align chapters and save a JSON report. This is a diagnostic command; it does not create an EPUB. Optional `-o/--output PATH` changes the report path. By default, the JSON is saved as `cache/align_<en>--<ru>.json`.
-
-```bash
-python -m bookparse align-chapters "books/english.epub" "books/russian.fb2"
-python -m bookparse align-chapters "books/english.epub" "books/russian.fb2" \
-  --output "output/chapter_alignment.json"
-python -m bookparse align-chapters "books/spanish.epub" "books/english.fb2" \
-  --source-lang es --translation-lang en
-```
-
-### `parse BOOK`
-
-Parse one EPUB or FB2 and save its extracted structure as JSON. By default, the JSON is written to `cache/<book-name>.json`. `-o/--output PATH` changes the destination; `--lang LANG` overrides the source language used for sentence segmentation (`en`, `ru`, or `es`).
-
-```bash
-python -m bookparse parse "books/english.epub"
-python -m bookparse parse "books/spanish.fb2" --lang es \
-  --output "cache/spanish_structure.json"
-```
-
-### Help and tests
-
-```bash
-python -m bookparse --help
-python -m bookparse build --help
-python -m pytest
-```
-
-## Reading the reports
-
-### `check`
-
-The report has issue levels and an overall verdict:
-
-- `INFO` — informational note; not a blocker.
-- `WARNING` — source feature that may affect quality; review it. The build continues.
-- `ERROR` — source issue considered critical by the current checks.
-- `VERDICT: OK` — no warnings or errors were detected (informational notes may still be listed).
-- `VERDICT: PROCEED WITH CAUTION` — warnings were found; inspect them before relying on the output.
-- `VERDICT: STOP` — an error was found. `build` stops before alignment and returns a non-zero status.
-
-These are heuristic checks. A warning may be a false positive, and an `OK` verdict is not a semantic translation review.
-
-### `align-chapters`
-
-- **Paired** — chapter pairs selected by the alignment pass.
-- **Confident / doubtful** — quality labels for those pairs, based on structural signals; they are not proof of semantic correctness.
-- **Unmatched** — titled main-body chapters without a counterpart on the other side.
-- **Service sections** — untitled front matter or auxiliary sections such as notes; they are listed separately from plot chapter matching.
-- **Word coverage** — the proportion of source and translation words belonging to matched chapters; report labels use detected or overridden languages.
-
-### `build`
-
-- **`Pair`** — the source and translation chapters being processed together, labelled with their languages.
-- **Source-only** — a source chapter without a translation pair; it is retained without invented text.
-- **`embeddings`** — newly computed sentence and joined-text vectors; the rest came from cache.
-- **`ops`** — counts of sentence alignment operations (`1:1`, `1:2`, `2:1`, `skip_en`, `skip_ru`) and match quality labels.
-- **`[OK]` / `[FAIL]`** — post-write EPUB checks, including chapter set/order, XHTML, parsed-text completeness/order, and internal image links. A failed check gives a non-zero exit status and is not reported as a successful conversion.
-- **`TOTAL`** — chapter, sentence, source-only chapter, and source paragraph-without-translation totals. Translation chapters not represented in the source structure are listed separately.
-
-The operation names `skip_en` and `skip_ru` are retained for compatibility; they mean a skipped source or translation sentence, respectively. Text-preservation checks compare the EPUB with the parser's extracted text. They cannot prove that each translated sentence is correct for the source sentence above it.
-
-## Tested conversions
-
-| Book | Inputs | Result |
+| Command | Purpose | Example |
 |---|---|---|
-| *The Blade Itself* / «Кровь и железо» | FB2 + FB2 | Full EPUB created; 52 XHTML sections, 48 paired chapters, 4 source-only chapters. Structural and text checks passed. |
-| *Lost Gods* | EPUB + FB2 | Full EPUB created with the real Qwen model; 116 XHTML sections, 110 paired chapters and 6 source-only chapters. Structure, text and image-link checks passed. |
+| `check SOURCE TRANSLATION` | Print preflight warnings and errors. `--output PATH` saves the report. | `python -m bookparse check source.epub translation.fb2` |
+| `build SOURCE TRANSLATION` | Create the bilingual EPUB. Supports `--preview`, `--short-paragraphs`, `--output PATH`, and language overrides. | `python -m bookparse build source.epub translation.fb2 --preview` |
+| `align-chapters SOURCE TRANSLATION` | Save a chapter-alignment JSON report; `--output PATH` changes its location. | `python -m bookparse align-chapters source.epub translation.fb2` |
+| `parse BOOK` | Save one book's parsed structure as JSON; supports `--output PATH` and `--lang CODE` (`en`, `ru`, or `es`). | `python -m bookparse parse source.epub --output cache/source.json` |
 
-The `Lost Gods` preflight returned `PROCEED WITH CAUTION` because it found source/chapter-structure warnings; generation and post-write checks still completed. Its chapter alignment included one doubtful pair. These book-specific results do not measure universal alignment accuracy.
-
-Latest recorded automated test run: **134 passed**.
+For command help, run `python -m bookparse --help` or
+`python -m bookparse build --help`.
 
 ## Limitations
 
-- Semantic alignment is experimental. A translation can appear under a neighboring source paragraph, especially for short dialogue, standalone lines, letters and epigraphs.
-- `skip_en` and `skip_ru` are alignment operations, not semantic judgements. Review the resulting paragraphs when these are frequent.
-- The source book defines paragraph structure; translation paragraph boundaries are not reconstructed. Verse lines may be combined.
-- Some source formatting, including inline italics, is flattened by the parsers.
-- Sentence segmentation has language-specific rules for English, Russian and Spanish, but it is still heuristic; rare abbreviations and punctuation patterns may be split incorrectly.
-- Languages beyond English, Russian, and Spanish are not supported by this MVP, even though the underlying Qwen model is multilingual.
-- The automatic checks verify structure and text relative to parser output. They do not verify the meaning or literary quality of the translation, nor do they catch text already lost by parsing.
-- Translation chapters without a source counterpart are reported but are not added to the generated book.
+- Only English, Russian, and Spanish are supported. Sentence segmentation
+  and semantic alignment are heuristic; inspect warnings and review the
+  generated book.
+- Chapter matching uses titled main-body chapters and does not merge
+  chapters. Translation chapters without a source counterpart are not added
+  to the output.
+- The source controls paragraph structure; translation paragraph breaks
+  are not retained. Some inline formatting, such as italics, is flattened.
+- `--short-paragraphs` cannot split a grouped alignment operation, a
+  group crossing source paragraphs, or structural blocks. An indivisible
+  operation may therefore exceed 40 source words.
+- Verification compares the generated EPUB with parsed text. It cannot
+  detect text already lost by a parser or judge translation meaning.
 
-MVP v0.1 is a working converter, not a guarantee of perfect alignment. Review the generated EPUB before relying on it for close reading.
-
-## Project structure
-
-```text
-2EPUB/
-├── bookparse/       # Parsers, CLI, checks, alignment and reconstruction
-├── experiments/     # EPUB builder and diagnostic scripts
-├── tests/           # Automated tests, including end-to-end CLI cases
-├── docs/            # Architecture notes
-├── books/           # User input books (ignored by Git)
-├── cache/           # Model weights and embedding cache (ignored by Git)
-├── output/          # Generated EPUBs and reports (ignored by Git)
-├── requirements.txt
-├── README.md
-└── README.ru.md
-```
-
-For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Personal books, model files and generated output are not committed to the repository.
-
-## Next steps
-
-Converter work may improve alignment, preserve more formatting and expand QA across books. A future, separate reading app is a plan—not an implemented feature—and may include a web reader, parallel-text controls, optional LLM translation and text-level adaptation.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details
+and [PROGRESS.md](PROGRESS.md) for current verification status.

@@ -1,201 +1,228 @@
 # 2EPUB — Architecture
 
-Technical reference for the bilingual EPUB pipeline. Read this before
-modifying alignment, reconstruction or EPUB assembly code.
+This document describes the implemented pipeline. User commands and setup
+are in [README.md](../README.md) and [README.ru.md](../README.ru.md).
 
-Pipeline overview:
+## Supported inputs
 
+- Each input is independently `.epub` or `.fb2`; all four format
+  combinations are supported.
+- Validated languages are English (`en`), Russian (`ru`), and Spanish
+  (`es`) in all six directed pairs.
+- Language comes from EPUB/FB2 metadata unless overridden. Aliases and
+  regional tags normalize to the base language. Missing metadata uses the
+  compatibility fallback EN→RU.
+- Sentence segmentation has language-specific abbreviation rules for the
+  three supported languages; it remains heuristic.
+
+## Pipeline
+
+```text
+SOURCE + TRANSLATION
+       │
+       ├─ parse_epub / parse_fb2 ─► Book models
+       ├─ preflight checks ───────► INFO / WARNING / ERROR
+       ├─ align_chapters ─────────► chapter pairs and unmatched sections
+       ├─ Qwen embeddings/cache ──► similarity matrices
+       ├─ align_sentences ────────► ordered AlignOp operations
+       ├─ rebuild_chapter ────────► source-shaped bilingual paragraphs
+       └─ EPUB render/write ──────► post-write verification
 ```
-EN.fb2 ──┐
-         ├─► parse_fb2 ─► Book ─► align_chapters ─► pairs
-RU.fb2 ──┘                                       │
-                                                 ▼
-        sentences ─► embed (cached) ─► sim matrix ─► align_sentences
-                                                 │   (AlignOp list)
-                                                 ▼
-                              rebuild_chapter ─► BilingualParagraphs
-                                                 │
-                                                 ▼
-                            render + ebooklib ─► output/*.epub ─► _verify
-```
 
-**Design invariant:** the *English* book is the structural skeleton —
-chapter order, paragraph order and paragraph boundaries come from EN.
-RU text is distributed onto that skeleton by alignment ops. No
-sentence may be lost or duplicated; violations raise `ValueError`,
-and the post-write `_verify` re-checks everything against the packaged
-EPUB.
+The source book defines output chapter order and paragraph/block structure.
+The translation is attached to source content by alignment operations.
+Operations must cover both sentence streams exactly once and in order;
+reconstruction raises `ValueError` if that invariant is broken.
 
----
+## Modules and data model
 
-## Modules (`bookparse/`)
-
-| Module | Role |
+| Module | Responsibility |
 |---|---|
-| `models.py` | Dataclasses: `Book → Chapter → Paragraph → Sentence`. |
-| `fb2_parser.py` | FB2 → `Book` via BeautifulSoup (`lxml-xml`). Each `<section>` → chapter; titles, epigraphs, poems, citations, images, empty lines become typed paragraphs. All `<body>` elements processed (incl. auxiliary bodies like `notes`). |
-| `epub_parser.py` | EPUB → `Book` via EbookLib + BeautifulSoup. Chapters delimited by TOC anchors; falls back to headings, then spine files. |
-| `segment.py` | Rule-based sentence splitter (EN+RU, abbreviation-aware) and `count_words`. |
-| `chapter_alignment.py` | Needleman–Wunsch DP over plot chapters; quality report. |
-| `sentence_alignment.py` | DP over sentence sequences → `AlignOp` list; no ML inside. |
-| `embedding_cache.py` | Disk cache for embedding vectors. |
-| `paragraph_reconstruction.py` | Distributes RU sentences over EN paragraphs → `BilingualParagraph`. |
-| `checks.py` | Preflight heuristics on parsed books + cross-book comparison. |
-| `cli.py` | `python -m bookparse parse / check / align-chapters`. |
+| `models.py` | `Book → Chapter → Paragraph → Sentence` data model. |
+| `epub_parser.py` | Reads EPUB spine XHTML, TOC markers, headings, paragraphs and image references. |
+| `fb2_parser.py` | Reads FB2 bodies, nested sections, typed blocks and image references. |
+| `languages.py`, `segment.py` | Language normalization, metadata fallback, sentence splitting and word counting. |
+| `checks.py` | Heuristic single-book and cross-book preflight checks. |
+| `chapter_alignment.py` | Monotonic chapter pairing and quality report. |
+| `sentence_alignment.py` | Pure DP over sentence similarity values; returns `AlignOp`s and does not load a model. |
+| `embedding_cache.py` | Persistent cache for sentence and joined-text vectors. |
+| `paragraph_reconstruction.py` | Assigns translation sentences and optionally splits source blocks. |
+| `cli.py` | Public `python -m bookparse` commands: `check`, `build`, `align-chapters`, `parse`. |
+| `experiments/build_preview_epub.py` | Model wiring, asset extraction, XHTML/EPUB generation and verification. |
 
-`experiments/build_preview_epub.py` is the only place these are wired
-into an actual EPUB; it also owns FB2 `<binary>` extraction (the
-parser records image *references* only), XHTML rendering and
-post-write verification.
+Core records:
 
-## Data structures
-
-```python
-Sentence:  id, order, text
-Paragraph: id, order, type, text, source_id, images, sentences
-Chapter:   id, order, title, level, source_id, body, paragraphs
+```text
 Book:      source_file, format, metadata, chapters
+Chapter:   id, order, title, level, source_id, body, paragraphs
+Paragraph: id, order, type, text, source_id, images, sentences
+Sentence:  id, order, text
+AlignOp:   kind, en_idx, ru_idx, score, en_text, ru_text, quality
 ```
 
-- `Paragraph.type`: `heading | paragraph | epigraph | cite | subtitle |
-  verse | text-author | image | empty-line | quote | table | ...` —
-  preserved from the source markup.
-- `Chapter.body`: `"main"` or the FB2 `<body name>` (e.g. `notes`).
-  Only *titled* main-body chapters participate in chapter alignment.
+`Chapter.body` is `"main"` or an FB2 body name such as `notes`.
+`Paragraph.images` contains references, not image bytes. Internal field names
+`en`/`ru` are historical; the public pipeline is source-language neutral.
 
-```python
-AlignOp(kind, en_idx, ru_idx, score, en_text, ru_text, quality)
-# kind: "1:1" | "1:2" | "2:1" | "skip_en" | "skip_ru"
-# quality: "confident" | "doubtful" | "unmatched"
+## Parsing
 
-BilingualParagraph(index, type, en_sentences, ru_sentences, ru_op_kinds)
-```
+### EPUB
 
-`align_chapters()` returns a JSON-ready dict: `pairs` (each with ids,
-titles, word counts, `quality`, `reasons`), `unmatched.english /
-russian`, `service.english / russian`, `quality` totals.
+`parse_epub` reads linear XHTML documents from the spine with EbookLib and
+parses their block content with BeautifulSoup. The EbookLib TOC is flattened
+into chapter markers; anchors can start multiple chapters inside one XHTML
+file. If there are no TOC markers, `h1`–`h3` headings are used when present;
+otherwise each spine document starts a chapter.
 
-## Stage I/O
+When any TOC markers exist, they take precedence over heading fallback.
+Spine documents without matching TOC markers do not necessarily start a new
+chapter and may be attached to the preceding chapter. EPUB service/front
+matter is not always reliably classified by its TOC or markup.
 
-| Stage | Input | Output |
-|---|---|---|
-| `parse_fb2` | `.fb2` path | `Book` (chapters → paragraphs → sentences) |
-| `align_chapters` | `en: Book`, `ru: Book` | dict with `pairs`, `unmatched`, `service` |
-| `embed_with_cache` | `encode_fn`, texts, cache dir, model, params | vectors, n_new, seconds |
-| `align_sentences` | EN/RU sentences, sim matrix, `group_scorer` | ordered `AlignOp` list |
-| `rebuild_chapter` | EN paragraphs (as sentence lists), RU sentences, ops | `BilingualParagraph` list |
-| builder | aligned chapters + FB2 binaries | `.epub` file |
-| `_verify` | written `.epub` + expected `BilingualParagraph`s | (label, ok) check list |
+Paragraph text, block type, IDs and local image references are extracted.
+Scripts and styles are skipped; inline formatting is flattened to plain
+text. Chapters are assigned `body="main"`.
 
-## Embedding cache (`embedding_cache.py`)
+### FB2
 
-- Key: `sha256(json{model, params, text})[:24]` — encode params that
-  affect the vector (`prompt`, `normalize_embeddings`) are part of the
-  key, so changing them invalidates entries instead of serving stale
-  ones.
-- Storage: one `.npy` per key in `cache/embeddings/`; written
-  atomically (temp file + `os.replace`), corrupted entries fall back
-  to recompute.
-- `embed_with_cache(encode_fn, texts, ...)` deduplicates within the
-  call, loads hits, batch-encodes only misses, validates the encoder's
-  output shape/finiteness, returns vectors in input order.
-- The builder uses params `{"prompt": None, "normalize_embeddings": True}`
-  — unit-norm vectors, so `E @ R.T` is already the cosine matrix.
-- Model weights live in `cache/models/` (`cache_folder` argument),
-  downloaded by `SentenceTransformer` on first use.
+`parse_fb2` processes every `<body>`. Each `<section>` becomes a chapter;
+nested sections increase `level`, and `<body name>` is recorded as the
+chapter body. Section titles, epigraphs, citations, poems/verse, subtitles,
+images, empty lines, tables and text-author blocks are represented by block
+types. Stray body-level content is retained in an untitled chapter.
 
-## Chapter DP (`chapter_alignment.py`)
+FB2 image references are recorded during parsing. The builder later decodes
+referenced `<binary>` data and the cover-page reference. Inline XML styling
+is not retained in the text model.
 
-- Universe: titled main-body chapters only; untitled front matter and
-  auxiliary bodies are returned as `service` entries — kept aside,
-  never ignored.
-- Pair score: `2.0·volume_ratio + 1.0·position_proximity + 0.5·level_match`
-  — text volume dominates, then relative position, then nesting level.
-- Skip cost: `1.0 + 0.5·min(words/3000, 1)` — large unmatched chapters
-  hurt more.
-- Quality assessment per pair: `confident` or `doubtful` + reasons
-  (`volume-mismatch`, `level-mismatch`, `position-drift`).
-- Chapter merges (1:N) are intentionally **not** implemented.
+## CLI and build modes
 
-## Sentence DP (`sentence_alignment.py`)
-
-Monotonic alignment, cost-minimizing; every EN and RU index appears in
-exactly one op (pair, merge or explicit skip).
-
-| Transition | Cost |
+| Command | Behavior |
 |---|---|
-| `1:1` | `1 − sim[i][j]` |
-| `1:2` / `2:1` | `2·(1 − group_sim) + group_penalty (0.05)` |
-| `skip_*` | `0.35` per sentence |
+| `python -m bookparse check SOURCE TRANSLATION` | Parse both books and print preflight results; `--output` optionally saves the report. |
+| `python -m bookparse build SOURCE TRANSLATION` | Run preflight and build the full source-ordered EPUB; default output `output/2epub.epub`. |
+| `build ... --preview` | Emit the first two aligned chapter pairs only. |
+| `build ... --short-paragraphs` | Apply source-word block segmentation after sentence alignment. |
+| `build ... --output PATH` | Set the output EPUB path. |
+| `check`, `build`, `align-chapters` | Accept `--source-lang` and `--translation-lang`. |
+| `python -m bookparse align-chapters SOURCE TRANSLATION` | Save chapter alignment JSON under `cache/` by default. |
+| `python -m bookparse parse BOOK` | Save one parsed book as JSON; `--lang` overrides segmentation language. |
 
-- Group costs are scaled by the covered sentence count — otherwise
-  merges would be undercharged and absorb stray sentences.
-- `group_scorer(en_idx, ru_idx)` scores the *joined* group text, not a
-  max of member sims. In production it uses embeddings of joined
-  adjacent pairs, precomputed in one batch through the same cache;
-  `bandwidth=15` restricts group queries to cells near the diagonal,
-  bounding scorer calls.
-- `confident_min=0.55` splits matches into `confident`/`doubtful`.
-- The function is pure: similarity matrix and scorer are injected, no
-  model is loaded inside.
+The public `build` command defaults to a full book. It passes the internal
+builder's `--all` option; invoking `experiments/build_preview_epub.py`
+directly defaults to its two-pair preview mode. Build preflight runs before
+chapter/sentence alignment and before model loading. `ERROR` stops the build;
+warnings are printed and conversion continues.
 
-## Paragraph reconstruction (`paragraph_reconstruction.py`)
+## Chapter alignment
 
-`rebuild_chapter(en_paragraphs, ru_sentences, ops)` →
-`BilingualParagraph`s, one per EN paragraph.
+Only chapters with a title and `body == "main"` participate in chapter DP.
+Untitled main sections and auxiliary bodies are returned as service entries.
+The public alignment is monotonic: it pairs one chapter at a time or leaves
+one unmatched; chapter merges are not implemented.
 
-- **Contract:** ops must cover every EN and RU index exactly once, in
-  order — otherwise `ValueError`. An empty EN chapter with RU text also
-  raises `ValueError` (there is nowhere to attach it).
-- Matched ops (`1:1`, `1:2`, `2:1`): RU goes to the paragraph of the
-  op's *first* EN index — a merge crossing a paragraph boundary lands
-  in the earlier paragraph.
-- `skip_ru` (translator insertions): attaches to the *next* matched
-  paragraph; trailing ones fall back to the last matched paragraph
-  (or paragraph 0 if nothing matched at all).
-- `skip_en`: the paragraph keeps its EN text, gets no translation —
-  rendered bare, never fabricated.
-- Chapter-scoped: passing ops from one pair makes cross-chapter
-  mixing impossible.
+The pair score combines normalized word-volume similarity, relative book
+position and nesting level:
 
-## EPUB assembly & verification
+```text
+2.0 × volume_ratio + 1.0 × position_proximity + 0.5 × level_match
+```
 
-Rendering (`_render_paragraph`) maps EN block types to XHTML:
-`heading → <h2>`, `epigraph|cite|quote → <blockquote>`, `image →
-<img>`, `empty-line → spacer`, else `<p><strong>…`. RU always renders
-as a plain `<p class="ru">` right below, and only when RU text exists.
-CSS classes `.en`/`.ru` are both the styling hook and the verification
-markers.
+An unmatched chapter has cost `1.0 + 0.5 × min(words / 3000, 1)`.
+Pairs are labeled `confident` or `doubtful` with structural reasons such as
+`volume-mismatch`, `level-mismatch` or `position-drift`. These labels are
+not semantic validation.
 
-Assembly: `epub.EpubBook` + one `EpubHtml` per chapter (`chap_N.xhtml`),
-`set_cover` for the FB2 coverpage binary, `EpubNcx` + `EpubNav`,
-spine `[cover?, nav, chap_1 … chap_N]`.
+In full build mode, every source chapter is emitted in source order.
+Unpaired source chapters remain source-only; unmatched translation chapters
+are reported but are not added to the source-defined EPUB.
 
-`_verify` re-opens the written file and checks:
+## Sentence alignment and Qwen cache
 
-- the chapter document set equals expectation **as a set** (file-name
-  sort would misorder `chap_10+`);
-- chapter order follows the **spine**, resolved via idrefs;
-- each `chap_*.xhtml` is well-formed XML;
-- per chapter, `.en`/`.ru` text equals the expected joined sentences —
-  completeness, order and no-duplication in one comparison;
-- every `<img src>` resolves to a packaged item;
-- nav document and NCX exist.
+The builder loads `Qwen/Qwen3-Embedding-0.6B` through SentenceTransformers
+when at least one chapter pair will be processed. It uses MPS when available,
+otherwise CPU. The model is downloaded on first use to `cache/models/`.
+Preflight `ERROR` exits before model loading.
 
-## Known architectural limitations
+`embed_with_cache` keys each vector by a truncated SHA-256 of model name,
+vector-affecting parameters and text. It stores `.npy` files in
+`cache/embeddings/`, writes atomically, deduplicates repeated texts in a
+call, validates encoded arrays, and recomputes unreadable entries. The
+builder normalizes vectors; pairwise dot products are cosine similarities.
+Joined adjacent sentence pairs used by the group scorer use the same cache.
 
-- Alignment is **monotonic**: reordering sentences/chapters is
-  impossible by design.
-- Chapter-level merges (1 EN : N RU) are not implemented.
-- RU paragraph structure is discarded — RU sentences re-flow into EN
-  paragraph shapes (verse lines merge).
-- Inline formatting (`<emphasis>`) is flattened at parse time; the
-  parsed model holds plain text only.
-- The builder extracts binaries from **FB2** only; an EPUB source
-  would lose its images/cover silently.
-- The group scorer covers only *adjacent* pairs — groups larger than
-  2:1/1:2 are impossible.
-- The builder's CLI covers `--en/--ru/--output/--all`; model and
-  alignment parameters remain fixed constants in the script.
-- Verification compares EPUB text to *parser output*, not to the raw
-  FB2 — parser-level losses are invisible to it.
+`align_sentences` is a model-free monotonic DP that receives the similarity
+matrix and group scorer. It emits ordered operations:
+
+| Operation | Meaning |
+|---|---|
+| `1:1` | One source sentence to one translation sentence. |
+| `1:2`, `2:1` | One sentence grouped with two adjacent sentences on the other side. |
+| `skip_en`, `skip_ru` | Explicit unmatched source or translation sentence. |
+
+The current DP supports groups only up to 1:2/2:1. Its costs are
+`1 - similarity` for 1:1, `2 × (1 - group_similarity) + 0.05` for groups,
+and `0.35` per skipped sentence. Group scoring is limited to a 15-cell
+diagonal bandwidth. A score threshold of `0.55` separates confident and
+doubtful matches. Every sentence index must occur in exactly one operation.
+
+## Paragraph reconstruction and short blocks
+
+`rebuild_chapter` assigns translation sentences to the source paragraph
+containing the first source index of each matched operation. A 2:1 operation
+crossing a source paragraph boundary is attached to the earlier paragraph.
+`skip_ru` text attaches to the next matched paragraph, falling back to the
+last matched paragraph at the end; `skip_en` leaves source text without an
+invented translation. Translation order follows its original stream.
+
+With `short_paragraphs=True`, segmentation runs on the already computed
+`AlignOp` list; sentence alignment is not repeated. Word counts include only
+source text and use the language-neutral Unicode word counter. Candidate
+boundaries are between complete operations. A partition optimizer targets
+the midpoint of 35–40 words (37.5) while keeping ordinary groups at or below
+40 words; when no boundary lands in the target interval, it chooses the
+lowest-deviation safe partition.
+
+`1:2` and `2:1` operations are indivisible. Operations over 40 source words
+remain whole and may form longer blocks. Paragraphs touched by an operation
+crossing source paragraph boundaries, plus headings, images, empty lines,
+subtitles, verse, tables and preformatted blocks, are not split. The
+translation is never truncated to fit. If a source paragraph is split,
+source images are included only with its first fragment.
+
+## EPUB rendering, assets and verification
+
+Source prose is bold, while source headings retain heading markup. Its
+aligned translation is a plain paragraph immediately below when available.
+Quote-like blocks render as blockquotes; supported source block types are
+retained. Output language metadata and XHTML `lang` attributes identify
+both languages.
+
+The builder can copy the source cover and referenced local images from
+either FB2 binaries or EPUB image items. Translation images are not copied.
+It creates one XHTML document per emitted source chapter, an EPUB navigation
+document and NCX, and a spine in source order. Chapter titles populate the
+generated navigation.
+
+After writing, `_verify` reopens the EPUB and checks the expected chapter
+set and spine order, XHTML well-formedness, source/translation text against
+the parsed expected sentences, image targets and presence of navigation and
+NCX. These checks establish consistency with parser output, not completeness
+against the raw books or semantic translation quality.
+
+## Technical limitations
+
+- Supported languages are limited to EN/RU/ES; Qwen being multilingual does
+  not validate other languages in this converter.
+- Sentence splitting and alignment are heuristic. Monotonic alignment
+  cannot reorder content; chapter merges and sentence groups larger than
+  1:2/2:1 are unsupported.
+- Only titled main-body chapters enter chapter alignment. EPUB TOC/spine
+  differences can cause service documents to be combined with a neighboring
+  chapter or treated as ordinary main content.
+- Translation paragraph structure is discarded. Verse or other blocks may
+  be flattened, and inline formatting such as italics is not preserved.
+- Short blocks may exceed 40 source words when a group is indivisible,
+  cross-paragraph, or belongs to an unsplittable structural block.
+- Verification cannot detect text lost during parsing or determine whether
+  each translation sentence is semantically correct.

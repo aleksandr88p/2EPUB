@@ -101,6 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
              % N_CHAPTERS,
     )
     parser.add_argument(
+        "--short-paragraphs", action="store_true",
+        help="split long bilingual paragraphs near 35–40 source words",
+    )
+    parser.add_argument(
         "--en", type=Path, required=True, metavar="PATH",
         help="legacy --en option: path to the source/original book",
     )
@@ -323,12 +327,13 @@ def _render_paragraph(
     translation_lang_attr = escape(translation_lang, quote=True)
 
     image_tags = []
-    for img in src.images:
-        source_key = _image_key(img.get("src"))
-        file_name = img_files.get(source_key)
-        if file_name:
-            alt = escape(img.get("alt") or "", quote=True)
-            image_tags.append(f'<img src="{file_name}" alt="{alt}" />')
+    if bp.include_images:
+        for img in src.images:
+            source_key = _image_key(img.get("src"))
+            file_name = img_files.get(source_key)
+            if file_name:
+                alt = escape(img.get("alt") or "", quote=True)
+                image_tags.append(f'<img src="{file_name}" alt="{alt}" />')
     image_block = (
         f'<div class="source-img">{"".join(image_tags)}</div>'
         if image_tags else ""
@@ -415,6 +420,7 @@ def _normed(v: np.ndarray) -> np.ndarray:
 
 def _align_chapter_pair(
     en_ch: Chapter, ru_ch: Chapter, encode,
+    short_paragraphs: bool = False,
 ) -> tuple[list[BilingualParagraph], dict[str, int]]:
     en_paragraphs = [[s.text for s in p.sentences] for p in en_ch.paragraphs]
     para_types = [p.type for p in en_ch.paragraphs]
@@ -447,6 +453,7 @@ def _align_chapter_pair(
     ops = align_sentences(en_sents, ru_sents, sim, group_scorer=group_scorer)
     bps = rebuild_chapter(
         en_paragraphs, ru_sents, ops, para_types=para_types,
+        short_paragraphs=short_paragraphs,
     )
 
     rebuilt_en = [s for p in bps for s in p.en_sentences]
@@ -613,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
               f"({len(source_ch.paragraphs)} source paras, "
               f"{len(translation_ch.paragraphs)} translation paras)")
         bps, op_stats = _align_chapter_pair(
-            source_ch, translation_ch, encode,
+            source_ch, translation_ch, encode, args.short_paragraphs,
         )
         print(f"  ops: {op_stats}")
         aligned.append((source_ch, translation_ch, bps))

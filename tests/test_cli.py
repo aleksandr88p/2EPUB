@@ -51,6 +51,27 @@ def test_build_preview_delegates_preview_and_custom_output(
     ]]
 
 
+def test_build_short_paragraphs_flag_is_forwarded(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        build_preview_epub, "main",
+        lambda argv: calls.append(argv) or 0,
+    )
+
+    result = cli.main([
+        "build", "source.fb2", "translation.epub", "--short-paragraphs",
+    ])
+
+    assert result == 0
+    assert calls == [[
+        "--en", "source.fb2",
+        "--ru", "translation.epub",
+        "--all",
+        "--short-paragraphs",
+        "--output", str(Path("output") / "2epub.epub"),
+    ]]
+
+
 def test_build_forwards_language_overrides(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(

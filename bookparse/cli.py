@@ -83,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="build only the first two aligned chapter pairs",
     )
     build_cmd.add_argument(
+        "--short-paragraphs", action="store_true",
+        help="split long bilingual paragraphs near 35–40 source words",
+    )
+    build_cmd.add_argument(
         "-o", "--output", type=Path, default=None,
         help=f"output EPUB path (default: {DEFAULT_BUILD_OUTPUT})",
     )
@@ -213,6 +217,8 @@ def run_build(args: argparse.Namespace) -> int:
     argv = ["--en", str(args.english), "--ru", str(args.russian)]
     if not args.preview:
         argv.append("--all")
+    if args.short_paragraphs:
+        argv.append("--short-paragraphs")
     if args.source_lang is not None:
         argv.extend(["--source-lang", args.source_lang])
     if args.translation_lang is not None:

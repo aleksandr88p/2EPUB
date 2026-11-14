@@ -16,7 +16,11 @@ from ebooklib import epub
 from bookparse.chapter_alignment import align_chapters
 from bookparse.checks import ERROR, WARNING, Issue
 from bookparse.models import Book, Chapter, Paragraph, Sentence
-from bookparse.paragraph_reconstruction import BilingualParagraph
+from bookparse.paragraph_reconstruction import (
+    BilingualParagraph,
+    rebuild_chapter,
+)
+from bookparse.sentence_alignment import AlignOp
 from experiments import build_preview_epub as builder
 from experiments.build_preview_epub import (
     FULL_PATH,
@@ -140,6 +144,17 @@ def test_all_flag_on() -> None:
     assert _build_parser().parse_args([
         "--all", "--en", "en.fb2", "--ru", "ru.fb2",
     ]).all_chapters is True
+
+
+def test_short_paragraphs_flag_defaults_off_and_can_be_enabled() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args([
+        "--en", "en.fb2", "--ru", "ru.fb2",
+    ]).short_paragraphs is False
+    assert parser.parse_args([
+        "--en", "en.fb2", "--ru", "ru.fb2", "--short-paragraphs",
+    ]).short_paragraphs is True
 
 
 def test_output_paths() -> None:
@@ -440,6 +455,85 @@ def test_render_heading_and_quote_types() -> None:
     assert "<blockquote>" in quote
 
 
+def test_short_rendering_preserves_quote_style_and_renders_image_once() -> None:
+    en = [
+        " ".join([f"e{i}_{j}" for j in range(9)] + [f"e{i}_9."])
+        for i in range(8)
+    ]
+    ru = [f"R{i}." for i in range(8)]
+    ops = [
+        AlignOp(
+            kind="1:1", en_idx=(i,), ru_idx=(i,), score=0.8,
+            en_text=en[i], ru_text=ru[i], quality="confident",
+        )
+        for i in range(8)
+    ]
+    source = Paragraph(
+        id="p-1", order=0, type="epigraph", text=" ".join(en),
+        images=[{"src": "#inline", "alt": "diagram"}],
+    )
+    bps = rebuild_chapter(
+        [en], ru, ops, para_types=["epigraph"], short_paragraphs=True,
+    )
+
+    html = "".join(
+        _render_paragraph(bp, source, {"inline": "images/inline.png"})
+        for bp in bps
+    )
+
+    assert len(bps) == 2
+    assert [bp.include_images for bp in bps] == [True, False]
+    assert html.count("<blockquote>") == 2
+    assert html.count('class="source epigraph"') == 2
+    assert html.count('<img src="images/inline.png"') == 1
+    assert html.count("<strong>") == 2
+
+
+def test_short_alignment_reuses_ops_without_running_alignment_again(
+    monkeypatch,
+) -> None:
+    en = [
+        " ".join([f"e{i}_{j}" for j in range(9)] + [f"e{i}_9."])
+        for i in range(8)
+    ]
+    ru = [f"R{i}." for i in range(8)]
+    ops = [
+        AlignOp(
+            kind="1:1", en_idx=(i,), ru_idx=(i,), score=0.8,
+            en_text=en[i], ru_text=ru[i], quality="confident",
+        )
+        for i in range(8)
+    ]
+    source = _chapter(0, "Source", paras=[Paragraph(
+        id="en-p", order=0, type="paragraph", text=" ".join(en),
+        sentences=[_sentence(text, order) for order, text in enumerate(en)],
+    )])
+    translation = _chapter(0, "Translation", paras=[Paragraph(
+        id="ru-p", order=0, type="paragraph", text=" ".join(ru),
+        sentences=[_sentence(text, order) for order, text in enumerate(ru)],
+    )])
+    alignment_calls = []
+    monkeypatch.setattr(
+        builder, "embed_with_cache",
+        lambda _encode, texts, *args, **kwargs: (
+            builder.np.ones((len(texts), 2)), 0, None,
+        ),
+    )
+
+    def align_once(en_sentences, ru_sentences, sim_matrix, group_scorer=None):
+        alignment_calls.append((en_sentences, ru_sentences, sim_matrix))
+        return ops
+
+    monkeypatch.setattr(builder, "align_sentences", align_once)
+    bps, _ = builder._align_chapter_pair(
+        source, translation, lambda _texts: None, short_paragraphs=True,
+    )
+
+    assert len(alignment_calls) == 1
+    assert [len(bp.en_sentences) for bp in bps] == [4, 4]
+    assert [len(bp.ru_sentences) for bp in bps] == [4, 4]
+
+
 # --- post-write verification --------------------------------------------
 
 def _mini_epub(path, bodies: list[str], spine_order=None) -> None:
@@ -488,6 +582,30 @@ def test_verify_passes_on_complete_text(tmp_path) -> None:
     path = tmp_path / "good.epub"
     _mini_epub(path, _bodies(1))
     assert all(ok for _, ok in _verify(path, _expected(1)))
+
+
+def test_verify_passes_on_split_bilingual_paragraphs(tmp_path) -> None:
+    en = [
+        " ".join([f"e{i}_{j}" for j in range(9)] + [f"e{i}_9."])
+        for i in range(8)
+    ]
+    ru = [f"R{i}." for i in range(8)]
+    ops = [
+        AlignOp(
+            kind="1:1", en_idx=(i,), ru_idx=(i,), score=0.8,
+            en_text=en[i], ru_text=ru[i], quality="confident",
+        )
+        for i in range(8)
+    ]
+    bps = rebuild_chapter([en], ru, ops, short_paragraphs=True)
+    body = "".join(
+        _render_paragraph(bp, _paragraph("", order=0), {})
+        for bp in bps
+    )
+    path = tmp_path / "short.epub"
+    _mini_epub(path, [body])
+
+    assert all(ok for _, ok in _verify(path, [("T1", bps)]))
 
 
 def test_verify_detects_missing_ru(tmp_path) -> None:

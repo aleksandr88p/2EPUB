@@ -1,151 +1,93 @@
 # 2EPUB — Project Progress
 
-Last updated: 2026-11-09
-Project status: **Experimental MVP v0.1**
+Last updated: 2026-11-14
+Project status: **Experimental MVP v0.1 — implementation complete; validation ongoing**
 
-## Implemented and working
+## Implemented
 
-- `bookparse` builds the data model `Book → Chapter → Paragraph → Sentence`.
-  The FB2 parser preserves block types and image references; the EPUB
-  parser extracts structure from the TOC, headings, or spine.
-- Chapters are aligned monotonically with DP using text volume, position,
-  and nesting level. The result distinguishes paired, doubtful, unmatched,
-  and service chapters.
-- Sentences are segmented with language-specific rules for English,
-  Russian, and Spanish, including common Spanish abbreviations and
-  initials.
-- `experiments/build_preview_epub.py` requires `--en` and `--ru`, accepts
-  `--output` and `--all`, and independently selects the FB2 or EPUB parser
-  for each input. All four format combinations are supported. Preview
-  includes the first two aligned chapter pairs; `--all` processes every
-  pair and keeps remaining English chapters without a translation.
-- `python -m bookparse build SOURCE TRANSLATION` delegates to the existing
-  EPUB generator and builds the full book by default. `--preview` selects the
-  first two aligned chapter pairs; `--output` overrides the default
-  `output/2epub.epub`.
-- The language pair is resolved from EPUB/FB2 metadata, with optional
-  `--source-lang` and `--translation-lang` overrides. MVP language codes
-  are `en`, `ru`, and `es`; common aliases and regional forms normalize to
-  these codes. Missing metadata retains the legacy EN→RU fallback.
-- Sentence segmentation has separate abbreviation sets for English,
-  Russian, and Spanish, including Spanish initials and common
-  abbreviations.
-- Generated EPUB metadata and XHTML language attributes now identify the
-  source and translation languages. User-facing preflight, alignment, and
-  build reports use the detected or overridden language names. Legacy
-  EN→RU CLI arguments and operation names remain supported.
-- The user-facing CLI provides `check`, `build`, `align-chapters`, and
-  `parse`. The separate commands remain available; ordinary use only
-  requires `check` and `build`.
-- Sentence alignment uses local Qwen3-Embedding-0.6B, a disk cache, and a
-  joined-text group scorer. Sentence DP emits `1:1`, `1:2`, `2:1`,
-  `skip_en`, and `skip_ru`.
-- `rebuild_chapter` distributes translation sentences over the source
-  paragraph structure and validates complete monotonic index coverage.
-  Missing source/translation text is not replaced with invented text.
-- The builder writes EPUB navigation, NCX, and spine; carries over the
-  source cover and referenced source images from either FB2 or EPUB;
-  and checks chapter count/order, XHTML, text against the parsed
-  representation, and image references.
-- After parsing both books, the builder runs the existing
-  `bookparse.checks.build_report()` preflight before chapter alignment or
-  loading Qwen. It prints the report, stops with a non-zero exit status
-  for ERROR/STOP, and continues with a visible warning summary for
-  WARNING. The separate `python -m bookparse check` command is unchanged.
-- The converter's main CLI path has automated end-to-end coverage for all
-  four FB2/EPUB input combinations and all six directed EN/RU/ES
-  language pairs. Tests use small real books and stub only Qwen/model
-  inference; parsing, preflight, chapter/sentence alignment, EPUB
-  generation, and EPUB verification run normally.
-- A generated EPUB is reported as successful only after verification
-  passes. Verification failures return non-zero and report failure.
-- A full test book, **The Blade Itself / «Кровь и железо»**, was generated:
-  from FB2 + FB2, with 52 XHTML sections, 48 paired chapters, and 4
-  source-only chapters. Structural and text-completeness checks passed.
-- **Lost Gods** was fully generated from EPUB + FB2 using the real Qwen
-  model: 116 XHTML sections, 110 paired chapters, and 6 source-only chapters.
-  Structure, text-completeness, and image-link checks passed. Preflight
-  reported `PROCEED WITH CAUTION` with 6 warnings; chapter alignment had
-  109 confident pairs and 1 doubtful pair. The generated file was
-  `output/Lost_Gods_bilingual.epub`.
+- EPUB and FB2 parsing, including all four source/translation format
+  combinations. EPUB chapters are read from TOC markers, headings, or spine
+  fallback; FB2 sections, nested sections, block types and image references
+  are represented in the book model.
+- Source-language-neutral CLI for EN, RU and ES, including all six directed
+  language pairs, metadata detection, language overrides, and the fallback
+  EN→RU pair when metadata is absent.
+- Public commands `check`, `build`, `align-chapters`, and `parse`.
+  `build` creates the full source-ordered EPUB by default; `--preview`
+  selects the first two aligned pairs.
+- Heuristic preflight checks, monotonic chapter alignment, and monotonic
+  sentence alignment. Sentence operations include `1:1`, `1:2`, `2:1`,
+  `skip_en` and `skip_ru`.
+- Qwen3-Embedding-0.6B sentence/group scoring with a persistent disk cache.
+- Paragraph reconstruction that preserves source order and validates exact
+  sentence-index coverage.
+- Optional `--short-paragraphs`: target about 35–40 source words using only
+  boundaries between existing `AlignOp`s. Group operations remain atomic;
+  translation text is not truncated, and images appear only with the first
+  split fragment. A synthetic 400-word case produced blocks of
+  30, 30, 50, 60, 30, 30, 50, 60, 30 and 30 words; the 50- and 60-word
+  blocks were indivisible operations.
+- EPUB generation with source chapter order, navigation/NCX, supported
+  source block formatting, and source cover/referenced images from EPUB or
+  FB2 when available. Post-write checks verify document order, XHTML, text
+  against parsed input, navigation and image references.
 
-## Implemented separately from the main converter
+## Confirmed full-book conversions
 
-- `parse_epub` and `bookparse parse/check/align-chapters` also work as
-  separate tools.
-- `checks.py` contains heuristic source checks and cross-book comparison.
-  These are also available through the separate `bookparse check` command.
-- `bookparse align-chapters` separately saves a JSON alignment result.
-  The builder performs chapter alignment directly.
-- `experiments/paragraph_preview.py`,
-  `experiments/sentence_alignment_diagnostic.py`,
-  `experiments/sentence_match_diagnostic.py`, and
-  `experiments/test_embeddings.py` are diagnostic/experimental scripts,
-  not stages of the conversion pipeline.
+| Book | Inputs and result |
+|---|---|
+| *The Blade Itself* / «Кровь и железо» | FB2 + FB2; 52 XHTML chapter documents, 48 paired chapters and 4 source-only chapters. Structural and text checks passed. |
+| *Lost Gods* | EPUB + FB2; 116 XHTML chapter documents, 110 paired chapters and 6 source-only chapters. Structure, text and image checks passed; preflight had 6 warnings and chapter alignment had 1 doubtful pair. |
+| *Yo, robot* / «Я, робот» | `books/01_Yo_robot_Isaac_Asimov.epub` + `books/я робот.fb2`; the user-provided run log confirms successful `--short-paragraphs` conversion to `output/Yo_robot_bilingual.epub` (965,856 bytes). All 9 stories were paired in order. All 14 chapter documents passed the listed post-write checks: 10 paired (the introduction plus 9 stories) and 4 Spanish-only. Preflight reported 6 warnings; 6 chapter pairs were labeled doubtful for position drift. |
 
-## Known issues and limitations
+The `Yo, robot` build is recorded as successful because the supplied
+terminal output includes `Successfully converted`, all post-write checks
+as `[OK]`, and exit code 0. These checks confirm consistency with parsed
+text; they are not a semantic review.
 
-- Semantic alignment is not guaranteed: a translation may end up under a
-  neighboring source paragraph. Short dialogue, standalone lines, letters,
-  and epigraphs need particular attention; `skip_en`/`skip_ru` require
-  contextual interpretation.
-- Source paragraph structure is retained, but translation paragraph
-  boundaries are not reconstructed. Verse lines may be merged; FB2 inline
-  formatting, including `<emphasis>`, is flattened to plain text by the
-  parser.
-- Chapter DP aligns titled chapters in the main body only; chapter
-  merges (one chapter to multiple chapters) are not implemented.
-- Sentence DP supports only `1:2` and `2:1` groups, not larger groups.
-- MVP language support is limited to English, Russian, and Spanish.
-  Spanish segmentation has common abbreviation rules but remains
-  heuristic; Qwen's broader multilingual model support does not mean
-  other languages have been validated by this converter.
-- Completeness checks compare the EPUB with parser output, not the raw FB2.
-  They do not establish semantic correctness.
-- A full independent semantic audit of the book is incomplete; a previous
-  partial review reported 5 MAJOR and 1 MINOR issues.
-- The model runs locally, but initial download and generation can take
-  time and require sufficient machine resources.
-
-## Remaining MVP verification
-
-- Complete and document an independent semantic QA audit of the two
-  generated books; review the previously reported 5 MAJOR and 1 MINOR
-  issues on *The Blade Itself*.
-- Evaluate alignment on additional books and translations.
-- Check the generated EPUBs in target reading applications.
-
-These are validation tasks, not missing CLI or conversion features.
-
-## Tests and verification
+## Automated tests
 
 Most recent full test run:
 
 ```text
 venv/bin/python -m pytest
-134 passed in 0.83s
+149 passed in 1.08s
 ```
 
-Tests cover chapter alignment, sentence alignment, parsers, heuristic
-checks, cache, paragraph reconstruction, user-facing CLI, and
-builder/EPUB verification.
-Builder tests exercise all four input format combinations, unsupported
-formats and missing paths, plus image/cover extraction. Language tests
-cover aliases, Spanish segmentation, overrides, fallback, and all six
-directed language pairs end to end. Preflight tests cover OK, WARNING,
-and ERROR (including stopping before alignment); end-to-end tests verify
-source/translation chapter text and order, language metadata, images,
-and cover. Qwen is stubbed in tests; pytest does not rerun the full-book
-conversion.
+The suite covers parsers, preflight, all four format combinations, all six
+language directions, alignment, paragraph reconstruction, CLI forwarding,
+EPUB generation and verification. Tests stub model inference; they do not
+run a full-book conversion.
 
-## Key files
+## Known limitations and remaining work
 
-- `experiments/build_preview_epub.py` — EPUB conversion CLI.
-- `bookparse/` — parsing, models, segmentation, alignment, cache, and checks.
-- `tests/` — automated tests.
-- `README.md`, `README.ru.md` — user documentation.
-- `docs/ARCHITECTURE.md` — module architecture and contracts.
+- Semantic alignment and sentence segmentation remain heuristic. Review
+  warnings and doubtful pairs; text can be attached to a neighboring
+  paragraph.
+- Chapter alignment uses titled main-body chapters and does not merge
+  chapters. Sentence alignment supports groups only up to 1:2/2:1.
+- Translation paragraph boundaries and some inline formatting are not
+  preserved. EPUB TOC/spine differences can affect chapter boundaries and
+  service-section classification.
+- Short blocks can exceed 40 source words when an operation is indivisible,
+  crosses source paragraphs, or belongs to an unsplittable structural block.
+- Verification compares generated text with parser output, not raw book
+  contents, and does not assess translation meaning.
+- An independent semantic QA audit remains incomplete; a previous partial
+  review of *The Blade Itself* reported 5 major and 1 minor issue.
 
-Personal books, model files, cache, and generated EPUBs belong in `books/`,
-`cache/`, and `output/`. User data and generated files are ignored by Git;
-`.gitkeep` files retain the input and output directories in the repository.
+Next validation work:
+
+1. Complete and document semantic review of generated books, especially
+   doubtful chapter/paragraph alignments.
+2. Inspect output in target reading applications, including a 6-inch Kindle.
+3. Expand QA across additional book pairs and structural variants.
+
+## Documentation and user data
+
+- `README.md`, `README.ru.md` — concise user guides in English and Russian.
+- `docs/ARCHITECTURE.md` — implementation details and limitations.
+- `AGENTS.MD` — repository-specific agent workflow and testing rules.
+
+Keep personal books, model files, caches and generated EPUBs in `books/`,
+`cache/` and `output/`; these are ignored by Git.
