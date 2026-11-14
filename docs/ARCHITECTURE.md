@@ -41,6 +41,7 @@ reconstruction raises `ValueError` if that invariant is broken.
 | `models.py` | `Book → Chapter → Paragraph → Sentence` data model. |
 | `epub_parser.py` | Reads EPUB spine XHTML, TOC markers, headings, paragraphs and image references. |
 | `fb2_parser.py` | Reads FB2 bodies, nested sections, typed blocks and image references. |
+| `fb2_chapter_recovery.py` | Conservatively recovers repeated chapter/part boundaries from a single unstructured FB2 section. |
 | `languages.py`, `segment.py` | Language normalization, metadata fallback, sentence splitting and word counting. |
 | `checks.py` | Heuristic single-book and cross-book preflight checks. |
 | `chapter_alignment.py` | Monotonic chapter pairing and quality report. |
@@ -53,14 +54,15 @@ reconstruction raises `ValueError` if that invariant is broken.
 Core records:
 
 ```text
-Book:      source_file, format, metadata, chapters
+Book:      source_file, format, metadata, chapters, chapter_recovery
 Chapter:   id, order, title, level, source_id, body, paragraphs
 Paragraph: id, order, type, text, source_id, images, sentences
 Sentence:  id, order, text
 AlignOp:   kind, en_idx, ru_idx, score, en_text, ru_text, quality
 ```
 
-`Chapter.body` is `"main"` or an FB2 body name such as `notes`.
+`Chapter.body` is `"main"`, an FB2 body name such as `notes`, or a
+`front-matter`/`back-matter` service classification from recovery.
 `Paragraph.images` contains references, not image bytes. Internal field names
 `en`/`ru` are historical; the public pipeline is source-language neutral.
 
@@ -94,6 +96,32 @@ types. Stray body-level content is retained in an untitled chapter.
 FB2 image references are recorded during parsing. The builder later decodes
 referenced `<binary>` data and the cover-page reference. Inline XML styling
 is not retained in the text model.
+
+When a book has exactly one large main section and no normal chapter
+segmentation, the parser looks for recurring structural patterns before
+changing its chapter list. It
+scores compact paragraph pairs, separating `<empty-line/>` runs, resumed
+prose, paragraph positions and repetition across the section; existing
+heading/subtitle block types are also considered. It does not search for
+chapter keywords or divide text into fixed-size pieces. Part candidates
+require a wider separator and a following chapter-heading pattern. Recovery
+requires at least four repeated chapter candidates, coverage across at least
+25% of the section and confidence of at least 0.80. Parts are level 1 and
+their chapters level 2. Paragraphs before and after the recovered main
+structure remain separate front/back-matter service sections.
+
+All paragraph records are partitioned by their original positions; text,
+order, image references and supported block types are retained. Candidate
+scores are available in `Book.chapter_recovery`. If the evidence is weak,
+the parser leaves the original section intact and preflight reports a
+warning rather than guessing. `check`, `align-chapters` and `build` all use
+this same parser result.
+
+When the other book has normal chapter structure, `check` runs the existing
+order/volume/level chapter DP as corroboration and reports pair quality and
+unmatched sections. This does not force equal chapter counts or create
+boundaries, and it does not load Qwen. It is structural confirmation, not
+semantic verification.
 
 ## CLI and build modes
 
@@ -201,8 +229,10 @@ both languages.
 The builder can copy the source cover and referenced local images from
 either FB2 binaries or EPUB image items. Translation images are not copied.
 It creates one XHTML document per emitted source chapter, an EPUB navigation
-document and NCX, and a spine in source order. Chapter titles populate the
-generated navigation.
+document and NCX, and a spine in source order. The linked TOC follows
+`Chapter.level`, so recovered parts link to their part documents and contain
+nested links to their chapters. Post-write checks verify TOC and NCX targets,
+titles and hierarchy as well as spine order.
 
 After writing, `_verify` reopens the EPUB and checks the expected chapter
 set and spine order, XHTML well-formedness, source/translation text against
@@ -220,6 +250,11 @@ against the raw books or semantic translation quality.
 - Only titled main-body chapters enter chapter alignment. EPUB TOC/spine
   differences can cause service documents to be combined with a neighboring
   chapter or treated as ordinary main content.
+- FB2 chapter recovery is structural and conservative, not semantic. A
+  single section without enough repeated layout evidence remains unsplit;
+  unusual chapter layouts may therefore still require manual review. The
+  paired book corroborates recovered boundaries by volume/order, but cannot
+  prove their semantic correctness.
 - Translation paragraph structure is discarded. Verse or other blocks may
   be flattened, and inline formatting such as italics is not preserved.
 - Short blocks may exceed 40 source words when a group is indivisible,

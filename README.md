@@ -18,6 +18,9 @@ immediately below.
 - Source chapter structure, supported block formatting, cover and
   referenced images are carried over when available. The output includes
   EPUB navigation and a table of contents.
+- A conservative FB2 fallback can recover repeated part/chapter structure
+  from a single malformed section; uncertain boundaries are left intact and
+  reported.
 - Optional `--short-paragraphs` mode targets about 35–40 source words per
   block. It keeps the complete aligned translation without a word limit
   and splits only at sentence and alignment-operation boundaries; 1:2 and

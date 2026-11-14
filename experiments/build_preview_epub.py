@@ -392,6 +392,42 @@ def _chapter_plan(
     return [(ch, pair_by_en.get(ch.order)) for ch in en_book.chapters]
 
 
+def _chapter_toc(
+    items: list[epub.EpubHtml],
+    source_chapters: list[Chapter],
+) -> tuple[tuple, list[tuple[str, str, int]]]:
+    """Build linked TOC nodes using the recovered/source chapter levels."""
+    if len(items) != len(source_chapters):
+        raise ValueError("TOC items and source chapters must have equal length")
+    roots: list[dict] = []
+    stack: list[dict] = []
+    expected: list[tuple[str, str, int]] = []
+
+    for item, chapter in zip(items, source_chapters):
+        level = max(1, chapter.level)
+        while stack and stack[-1]["level"] >= level:
+            stack.pop()
+        node = {
+            "link": epub.Link(item.file_name, item.title, item.id),
+            "level": level,
+            "children": [],
+        }
+        if stack:
+            stack[-1]["children"].append(node)
+        else:
+            roots.append(node)
+        expected.append((item.file_name, item.title, len(stack)))
+        stack.append(node)
+
+    def freeze(node: dict):
+        link = node["link"]
+        if node["children"]:
+            return link, tuple(freeze(child) for child in node["children"])
+        return link
+
+    return tuple(freeze(node) for node in roots), expected
+
+
 def _unpaired_reason(chapter: Chapter) -> str:
     if chapter.body != "main":
         return f"auxiliary-body:{chapter.body}"
@@ -471,6 +507,7 @@ def _verify(
     expected: list[tuple[str, list[BilingualParagraph]]],
     source_label: str = "EN",
     translation_label: str = "RU",
+    expected_toc: list[tuple[str, str, int]] | None = None,
 ) -> list[str]:
     """Re-open the EPUB and check structure + text integrity."""
     checks: list[str] = []
@@ -503,6 +540,74 @@ def _verify(
     nav_ok = any(isinstance(i, epub.EpubNav) for i in book.get_items())
     checks.append(("EPUB3 nav document present", nav_ok))
     checks.append(("NCX present", "toc.ncx" in item_names))
+    if expected_toc is None:
+        expected_toc = [
+            (f"chap_{index + 1}.xhtml", title, 0)
+            for index, (title, _) in enumerate(expected)
+        ]
+    nav_item = next(
+        (item for item in book.get_items() if isinstance(item, epub.EpubNav)),
+        None,
+    )
+    actual_toc: list[tuple[str, str, int]] = []
+    if nav_item is not None:
+        nav_soup = BeautifulSoup(nav_item.get_content(), "lxml-xml")
+        nav = nav_soup.find("nav")
+        root_ol = nav.find("ol", recursive=False) if nav else None
+
+        def visit(ordered_list, depth: int) -> None:
+            for li in ordered_list.find_all("li", recursive=False):
+                link = li.find("a", recursive=False)
+                if link is not None:
+                    href = (link.get("href") or "").split("#", 1)[0]
+                    actual_toc.append((
+                        posixpath.normpath(posixpath.join(
+                            posixpath.dirname(nav_item.get_name()), href,
+                        )),
+                        " ".join(link.get_text().split()),
+                        depth,
+                    ))
+                child_list = li.find("ol", recursive=False)
+                if child_list is not None:
+                    visit(child_list, depth + 1)
+
+        if root_ol is not None:
+            visit(root_ol, 0)
+    checks.append((
+        "TOC links, titles and hierarchy",
+        actual_toc == expected_toc,
+    ))
+    ncx_item = next(
+        (item for item in book.get_items() if item.get_name() == "toc.ncx"),
+        None,
+    )
+    ncx_toc: list[tuple[str, str, int]] = []
+    if ncx_item is not None:
+        ncx_soup = BeautifulSoup(ncx_item.get_content(), "lxml-xml")
+
+        def visit_ncx(nav_point, depth: int) -> None:
+            for point in nav_point.find_all("navPoint", recursive=False):
+                content = point.find("content", recursive=False)
+                label = point.find("navLabel", recursive=False)
+                label_text = label.find("text", recursive=False) if label else None
+                href = (content.get("src") or "").split("#", 1)[0] if content else ""
+                ncx_toc.append((
+                    posixpath.normpath(posixpath.join(
+                        posixpath.dirname(ncx_item.get_name()), href,
+                    )),
+                    " ".join(label_text.get_text().split())
+                    if label_text else "",
+                    depth,
+                ))
+                visit_ncx(point, depth + 1)
+
+        nav_map = ncx_soup.find("navMap")
+        if nav_map is not None:
+            visit_ncx(nav_map, 0)
+    checks.append((
+        "NCX chapter links and hierarchy",
+        ncx_toc == expected_toc,
+    ))
 
     for k, (title, bps) in enumerate(expected):
         name = exp_names[k]
@@ -673,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
 
     chapters: list[epub.EpubHtml] = []
     expected: list[tuple[str, list[BilingualParagraph]]] = []
+    source_chapters: list[Chapter] = []
     for k, (source_ch, translation_ch, bps) in enumerate(aligned):
         source_title = source_ch.title or "Untitled"
         title = (
@@ -694,9 +800,11 @@ def main(argv: list[str] | None = None) -> int:
         item.content = _chapter_xhtml(body).encode("utf-8")
         out_book.add_item(item)
         chapters.append(item)
+        source_chapters.append(source_ch)
         expected.append((title, bps))
 
-    out_book.toc = tuple(chapters)
+    toc, expected_toc = _chapter_toc(chapters, source_chapters)
+    out_book.toc = toc
     out_book.add_item(epub.EpubNcx())
     out_book.add_item(epub.EpubNav())
     out_book.spine = [x for x in (cover_page, "nav", *chapters) if x]
@@ -706,7 +814,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- verification ----------------------------------------------------
     checks = _verify(
-        out_path, expected, source_label, translation_label,
+        out_path, expected, source_label, translation_label, expected_toc,
     )
     ok = True
     for label, passed in checks:

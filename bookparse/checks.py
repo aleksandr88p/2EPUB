@@ -27,6 +27,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
+from .chapter_alignment import align_chapters
 from .models import Book, Chapter
 from .segment import count_words
 
@@ -86,6 +87,28 @@ def check_book(book: Book, side: str) -> list[Issue]:
     """Structural checks for one parsed book."""
     issues: list[Issue] = []
     paras = _text_paragraphs(book)
+    recovery = book.chapter_recovery
+    if recovery and recovery.get("status") == "recovered":
+        issues.append(Issue(
+            INFO, side, "chapter-recovery",
+            f"Recovered {recovery['recovered_chapters']} chapter heading "
+            f"pattern(s) and {recovery['recovered_parts']} part(s) from "
+            "a single unstructured FB2 section "
+            f"(confidence {recovery['confidence']:.2f}).",
+            [
+                f"{item['kind']}: {item['title']} "
+                f"(confidence {item['confidence']:.2f})"
+                for item in recovery["candidates"][:3]
+            ],
+        ))
+    elif recovery and recovery.get("status") == "insufficient_evidence":
+        issues.append(Issue(
+            WARNING, side, "chapter-recovery-low-confidence",
+            f"FB2 chapter recovery found {recovery['candidate_count']} "
+            "structural candidate(s), but confidence "
+            f"{recovery['confidence']:.2f} is below the recovery threshold; "
+            "no boundaries were applied.",
+        ))
 
     for ch in book.chapters:
         words = _chapter_words(ch)
@@ -430,6 +453,46 @@ def build_report(
         + check_book(ru, "russian")
         + compare_books(en, ru, source_label, translation_label)
     )
+    recovered_source = bool(
+        en.chapter_recovery
+        and en.chapter_recovery.get("status") == "recovered"
+    )
+    recovered_translation = bool(
+        ru.chapter_recovery
+        and ru.chapter_recovery.get("status") == "recovered"
+    )
+    if (
+        recovered_source and _titled_main(ru)
+        or recovered_translation and _titled_main(en)
+    ):
+        alignment = align_chapters(en, ru)
+        quality = alignment["quality"]
+        pairs = alignment["pairs"]
+        pair_titles = [
+            f"{pair['en_title']} → {pair['ru_title']}"
+            for pair in (pairs[:1] + pairs[-1:] if pairs else [])
+        ]
+        recovered_counts = []
+        if recovered_source:
+            recovered_counts.append(
+                f"source={en.chapter_recovery['candidate_count']}"
+            )
+        if recovered_translation:
+            recovered_counts.append(
+                f"translation={ru.chapter_recovery['candidate_count']}"
+            )
+        issues.append(Issue(
+            INFO, "both", "chapter-recovery-reference",
+            "The existing order/volume chapter DP checked recovered "
+            f"section(s) ({', '.join(recovered_counts)}) against the "
+            "counterpart: "
+            f"{quality['pairs_total']} pair(s), {quality['confident']} "
+            f"confident, {quality['doubtful']} doubtful, "
+            f"{quality['unmatched_english']} unmatched source and "
+            f"{quality['unmatched_russian']} unmatched translation. "
+            "This is corroboration only; it does not force chapter counts.",
+            pair_titles,
+        ))
 
     def section(title: str, side: str) -> list[str]:
         lines = [f"--- {title} ---"]

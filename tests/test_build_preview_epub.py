@@ -15,6 +15,7 @@ from ebooklib import epub
 
 from bookparse.chapter_alignment import align_chapters
 from bookparse.checks import ERROR, WARNING, Issue
+from bookparse.fb2_parser import parse_fb2
 from bookparse.models import Book, Chapter, Paragraph, Sentence
 from bookparse.paragraph_reconstruction import (
     BilingualParagraph,
@@ -628,3 +629,85 @@ def test_verify_detects_wrong_spine_order(tmp_path) -> None:
     results = dict(_verify(path, _expected(3)))
     assert results["exactly the selected chapters present"] is True
     assert results["chapters in original order (spine)"] is False
+
+
+def test_recovered_part_chapter_toc_and_spine_are_nested_and_linked(
+    tmp_path,
+) -> None:
+    blocks = ["<p>Title page.</p>", *["<empty-line/>"] * 4]
+    for part, chapter_names in (
+        ("Division Alpha", ("Anchor One", "Anchor Two")),
+        ("Division Beta", ("Anchor Three", "Anchor Four")),
+    ):
+        blocks.extend([
+            "<p>" + part + "</p>", "<empty-line/>",
+            "<p>Part subtitle</p>", "<empty-line/>", "<empty-line/>",
+        ])
+        for name in chapter_names:
+            blocks.extend([
+                "<p>" + name + "</p>", "<empty-line/>",
+                "<p>Distinctive heading</p>",
+                "<empty-line/>", "<empty-line/>",
+                (
+                    "<p>This narrative has enough ordinary words to be "
+                    "distinguished from the compact structural headings.</p>"
+                ),
+                "<empty-line/>",
+            ])
+        blocks.extend(["<empty-line/>"] * 3)
+    source_path = tmp_path / "recovered.fb2"
+    source_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description><title-info><book-title>Test</book-title><lang>en</lang>
+  </title-info></description><body><section>"""
+        + "\n".join(blocks)
+        + "</section></body></FictionBook>",
+        encoding="utf-8",
+    )
+    source_book = parse_fb2(source_path)
+    assert source_book.chapter_recovery["status"] == "recovered"
+    assert source_book.chapter_recovery["recovered_parts"] == 2
+    source_chapters = source_book.chapters
+    items = []
+    expected = []
+    output_book = epub.EpubBook()
+    output_book.set_identifier("recovered-toc")
+    output_book.set_title("Recovered TOC")
+    output_book.set_language("en")
+
+    for index, chapter in enumerate(source_chapters):
+        title = f"{chapter.title} / Translation {index}"
+        item = epub.EpubHtml(
+            uid=f"chap_{index + 1}",
+            file_name=f"chap_{index + 1}.xhtml",
+            title=title,
+            lang="en",
+        )
+        item.content = (
+            f'<body><p class="source"><strong>E{index}</strong></p>'
+            f'<p class="translation">R{index}</p></body>'
+        )
+        output_book.add_item(item)
+        items.append(item)
+        expected.append((title, [
+            BilingualParagraph(
+                index=0, type="paragraph",
+                en_sentences=[f"E{index}"],
+                ru_sentences=[f"R{index}"],
+            )
+        ]))
+
+    toc, expected_toc = builder._chapter_toc(items, source_chapters)
+    output_book.toc = toc
+    output_book.add_item(epub.EpubNcx())
+    output_book.add_item(epub.EpubNav())
+    output_book.spine = ["nav", *items]
+    path = tmp_path / "recovered-toc.epub"
+    epub.write_epub(str(path), output_book)
+
+    checks = dict(_verify(path, expected, expected_toc=expected_toc))
+    assert checks["chapters in original order (spine)"] is True
+    assert checks["TOC links, titles and hierarchy"] is True
+    assert checks["NCX chapter links and hierarchy"] is True
+    assert [depth for _, _, depth in expected_toc] == [0, 0, 1, 1, 0, 1, 1]

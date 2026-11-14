@@ -9,6 +9,11 @@ Project status: **Experimental MVP v0.1 — implementation complete; validation 
   combinations. EPUB chapters are read from TOC markers, headings, or spine
   fallback; FB2 sections, nested sections, block types and image references
   are represented in the book model.
+- Conservative single-section FB2 recovery using repeated spacing and
+  compact-heading patterns. Recovered parts and chapters retain hierarchy;
+  uncertain candidates are reported without changing the original section.
+  Preflight corroborates accepted structure against a normal counterpart
+  with the existing chapter DP and does not launch Qwen.
 - Source-language-neutral CLI for EN, RU and ES, including all six directed
   language pairs, metadata detection, language overrides, and the fallback
   EN→RU pair when metadata is absent.
@@ -45,19 +50,36 @@ terminal output includes `Successfully converted`, all post-write checks
 as `[OK]`, and exit code 0. These checks confirm consistency with parsed
 text; they are not a semantic review.
 
+## Structural recovery validation
+
+`books/Wraiths of the Broken Land.fb2` and
+`books/Крэйг С Залер - Духи рваной земли .fb2` were checked without Qwen or
+EPUB generation. The English FB2 has 4,862 paragraphs, 8,258 sentences and
+91,121 words. It recovered 48 chapter headings and 5 parts from its single
+main section, while retaining separate front-matter and author sections.
+The Russian book has 5,196 paragraphs, 8,708 sentences and 71,074 words;
+its normal structure contains the same 48 chapters and 5 parts. Existing
+chapter DP paired all 53 sections confidently, with no unmatched sections
+and 100% word coverage on both sides. `check` now returns
+`PROCEED WITH CAUTION` (3 source-quality warnings), not `STOP: no-chapters`.
+
+A small synthetic EPUB test confirms nested Part → Chapter links in both
+EPUB3 navigation and NCX, with chapter documents in spine order. The full
+real-book EPUB has not been built.
+
 ## Automated tests
 
 Most recent full test run:
 
 ```text
 venv/bin/python -m pytest
-149 passed in 1.08s
+156 passed in 1.07s
 ```
 
-The suite covers parsers, preflight, all four format combinations, all six
-language directions, alignment, paragraph reconstruction, CLI forwarding,
-EPUB generation and verification. Tests stub model inference; they do not
-run a full-book conversion.
+The suite covers parsers, structural recovery, preflight, all four format
+combinations, all six language directions, alignment, paragraph
+reconstruction, CLI forwarding, nested EPUB navigation and verification.
+Tests stub model inference; they do not run a full-book conversion.
 
 ## Known limitations and remaining work
 
@@ -66,6 +88,10 @@ run a full-book conversion.
   paragraph.
 - Chapter alignment uses titled main-body chapters and does not merge
   chapters. Sentence alignment supports groups only up to 1:2/2:1.
+- FB2 recovery depends on recurring structural evidence and may leave an
+  unusual one-section layout unsplit. Cross-book volume/order alignment is
+  corroboration, not semantic proof; inline XML styles remain flattened by
+  the existing parser.
 - Translation paragraph boundaries and some inline formatting are not
   preserved. EPUB TOC/spine differences can affect chapter boundaries and
   service-section classification.

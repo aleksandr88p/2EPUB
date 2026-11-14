@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup, Tag
 
 from .models import Book, Chapter
 from .epub_parser import _ChapterBuilder
+from .fb2_chapter_recovery import recover_single_section
 
 Block = tuple[str, str, str | None, list[dict[str, str | None]]]
 # (type, text, source_id, images)
@@ -107,7 +108,12 @@ def _metadata(soup: BeautifulSoup) -> dict[str, str]:
     }
 
 
-def parse_fb2(path: str | Path, lang: str | None = None) -> Book:
+def parse_fb2(
+    path: str | Path,
+    lang: str | None = None,
+    *,
+    recover_chapters: bool = True,
+) -> Book:
     path = Path(path)
     soup = BeautifulSoup(path.read_bytes(), "lxml-xml")
 
@@ -134,4 +140,6 @@ def parse_fb2(path: str | Path, lang: str | None = None) -> Book:
             for p_type, text, source_id, images in _blocks(child, ()):
                 builder.add_paragraph(chapter, p_type, text, source_id=source_id, images=images)
 
+    if recover_chapters:
+        recover_single_section(book)
     return book

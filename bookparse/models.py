@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 from .segment import count_words
 
@@ -47,6 +48,7 @@ class Book:
     format: str  # "epub" | "fb2"
     metadata: dict[str, str]
     chapters: list[Chapter] = field(default_factory=list)
+    chapter_recovery: dict[str, Any] | None = None
 
     def stats(self) -> dict[str, int]:
         paragraphs = [p for ch in self.chapters for p in ch.paragraphs]
